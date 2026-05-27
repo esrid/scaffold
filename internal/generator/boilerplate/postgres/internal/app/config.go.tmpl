@@ -1,0 +1,37 @@
+package app
+
+import (
+	"cmp"
+	"fmt"
+	"os"
+)
+
+type Config struct {
+	DatabaseURL string
+	SecretKey   string
+	Addr        string
+	BaseURL     string
+	LogLevel    string
+	Env         string
+}
+
+func LoadConfig() (Config, error) {
+	cfg := Config{
+		DatabaseURL: env("DATABASE_URL", "postgres://localhost/{{.AppName}}?sslmode=disable"),
+		SecretKey:   os.Getenv("SECRET_KEY"),
+		Addr:        env("ADDR", ":8080"),
+		BaseURL:     env("BASE_URL", "http://localhost:8080"),
+		LogLevel:    env("LOG_LEVEL", "info"),
+		Env:         env("APP_ENV", "development"),
+	}
+
+	if cfg.SecretKey == "" {
+		return Config{}, fmt.Errorf("SECRET_KEY environment variable is required")
+	}
+
+	return cfg, nil
+}
+
+func env(key, fallback string) string {
+	return cmp.Or(os.Getenv(key), fallback)
+}

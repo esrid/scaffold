@@ -1,0 +1,25 @@
+package main
+
+import (
+	"log"
+
+	"{{.Module}}/internal/app"
+
+	_ "github.com/joho/godotenv/autoload"
+)
+
+func main() {
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	appInstance, err := app.NewApp(cfg)
+	if err != nil {
+		log.Fatalf("failed to initialize app: %v", err)
+	}
+
+	if err := appInstance.Run(); err != nil {
+		log.Fatalf("app crashed: %v", err)
+	}
+}

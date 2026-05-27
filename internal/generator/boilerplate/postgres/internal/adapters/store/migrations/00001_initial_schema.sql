@@ -1,0 +1,2 @@
+-- 00001_initial_schema.sql
+-- Postgres 18 built-in uuidv7 requires no extensions or initial schema setups.

@@ -1,0 +1,151 @@
+package scaffold
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/esrid/scaffold/internal/generator/boilerplate"
+	"github.com/esrid/scaffold/internal/parser"
+	"github.com/spf13/cobra"
+)
+
+var (
+	initModule string
+	initDB     string
+)
+
+var initCmd = &cobra.Command{
+	Use:   "init [dir]",
+	Short: "Bootstrap a new project from the boilerplate",
+	Long: `Bootstrap a complete Go hexagonal-architecture project from the built-in boilerplate.
+
+Creates the target directory (or uses the current one), writes all source files,
+runs go mod tidy, and writes .scaffold/models.json so scaffold gen works immediately.
+
+EXAMPLES
+  # Create ./myapp with a Postgres database
+  scaffold init myapp --module github.com/yourname/myapp --db postgres
+
+  # Create ./myapp with SQLite (no external database needed)
+  scaffold init myapp --module github.com/yourname/myapp --db sqlite
+
+  # Directory defaults to the last segment of --module when omitted
+  scaffold init --module github.com/yourname/myapp --db postgres
+  # → creates ./myapp/
+
+  # Omit --db to be prompted interactively
+  scaffold init --module github.com/yourname/myapp
+
+NEXT STEPS after init
+  cd myapp
+  make run                              # start the dev server on :8080
+  scaffold gen Product name:string! price:float!   # add your first model`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runInit,
+}
+
+func init() {
+	initCmd.Flags().StringVar(&initModule, "module", "", "Go module path (e.g. github.com/user/myapp)")
+	initCmd.Flags().StringVar(&initDB, "db", "", "Database driver: sqlite or postgres")
+	_ = initCmd.MarkFlagRequired("module")
+	rootCmd.AddCommand(initCmd)
+}
+
+func runInit(cmd *cobra.Command, args []string) error {
+	// Resolve target directory — default to last segment of module path
+	dir := ""
+	if len(args) == 1 {
+		dir = args[0]
+	} else {
+		parts := strings.Split(initModule, "/")
+		dir = parts[len(parts)-1]
+	}
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("init: resolve dir: %w", err)
+	}
+
+	// Prompt for DB if not provided
+	db := strings.ToLower(strings.TrimSpace(initDB))
+	if db == "" {
+		db, err = promptDB()
+		if err != nil {
+			return err
+		}
+	}
+	if db != "sqlite" && db != "postgres" {
+		return fmt.Errorf("invalid --db %q: must be sqlite or postgres", db)
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("init: mkdir: %w", err)
+	}
+
+	fmt.Printf("Initializing %s project in %s...\n", db, dir)
+
+	// Generate boilerplate files
+	if err := boilerplate.Generate(dir, initModule, db); err != nil {
+		return fmt.Errorf("init: generate: %w", err)
+	}
+
+	// Write .scaffold/models.json
+	if err := writeInitManifest(dir, initModule, db); err != nil {
+		return fmt.Errorf("init: manifest: %w", err)
+	}
+
+	// Run go mod tidy
+	fmt.Println("Running go mod tidy...")
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	tidy.Stdout = os.Stdout
+	tidy.Stderr = os.Stderr
+	if err := tidy.Run(); err != nil {
+		return fmt.Errorf("init: go mod tidy: %w", err)
+	}
+
+	name := filepath.Base(dir)
+	fmt.Printf("\n✓ Ready. Next steps:\n")
+	if name != "." {
+		fmt.Printf("  cd %s\n", name)
+	}
+	fmt.Printf("  make run\n")
+	return nil
+}
+
+func promptDB() (string, error) {
+	fmt.Print("Which database? (sqlite/postgres) [sqlite]: ")
+	r := bufio.NewReader(os.Stdin)
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("prompt: %w", err)
+	}
+	v := strings.ToLower(strings.TrimSpace(line))
+	if v == "" {
+		return "sqlite", nil
+	}
+	return v, nil
+}
+
+func writeInitManifest(dir, module, db string) error {
+	m := parser.Manifest{
+		Module: module,
+		DB:     db,
+		Models: map[string]parser.ManifestModel{},
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	scaffoldDir := filepath.Join(dir, ".scaffold")
+	if err := os.MkdirAll(scaffoldDir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(scaffoldDir, "models.json"), data, 0644)
+}

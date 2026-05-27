@@ -1,0 +1,184 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	httpAdapter "{{.Module}}/internal/adapters/http"
+	"{{.Module}}/internal/adapters/store"
+	"{{.Module}}/web"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type App struct {
+	cfg        Config
+	pool       *pgxpool.Pool
+	logger     *slog.Logger
+	registry   *Registry
+	fileSystem http.FileSystem
+}
+
+func NewApp(cfg Config) (*App, error) {
+	logger := buildLogger(cfg.LogLevel, cfg.Env)
+
+	pool, err := store.Open(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	fileSystem, err := buildStaticFS(cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+
+	return &App{
+		cfg:        cfg,
+		pool:       pool,
+		logger:     logger,
+		registry:   NewRegistry(pool, logger),
+		fileSystem: fileSystem,
+	}, nil
+}
+
+func (a *App) Run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	srv := &http.Server{
+		Addr:              a.cfg.Addr,
+		Handler:           a.buildRouter(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		BaseContext: func(net.Listener) context.Context {
+			return context.Background()
+		},
+	}
+
+	a.logger.Info("HTTP Server listening", "addr", a.cfg.Addr, "log_level", a.cfg.LogLevel)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			a.logger.Error("server crashed", "err", err)
+		}
+	}()
+
+	<-ctx.Done()
+	return a.shutdown(srv)
+}
+
+func (a *App) buildRouter() *chi.Mux {
+	r := chi.NewRouter()
+	a.mountMiddlewares(r)
+	a.mountRoutes(r)
+	return r
+}
+
+func (a *App) mountMiddlewares(r *chi.Mux) {
+	r.Use(middleware.RequestID)
+	r.Use(middleware.CleanPath)
+	r.Use(httpAdapter.CORS())
+	r.Use(httpAdapter.StructuredLogger(a.logger))
+	r.Use(httpAdapter.StructuredRecoverer(a.logger))
+	r.Use(middleware.Timeout(60 * time.Second))
+}
+
+func (a *App) mountRoutes(r *chi.Mux) {
+	r.Get("/health", a.healthHandler)
+	r.Get("/", a.serveFile("index.html", "text/html; charset=utf-8", web.IndexHTML))
+	r.Get("/robots.txt", a.serveFile("robots.txt", "text/plain; charset=utf-8", web.RobotsTXT))
+	r.Get("/sitemap.xml", a.serveFile("sitemap.xml", "application/xml", web.SitemapXML))
+	serveStatic(r, "/static", a.fileSystem)
+	// scaffold: add model routes here
+}
+
+func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := a.pool.Ping(r.Context()); err != nil {
+		a.logger.Error("database health check failed", "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"status":"unhealthy","database":"disconnected"}`))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"healthy","database":"connected"}`))
+}
+
+func (a *App) serveFile(name, contentType string, prodBytes []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		if a.cfg.Env == "production" {
+			_, _ = w.Write(prodBytes)
+			return
+		}
+		file, err := a.fileSystem.Open(name)
+		if err != nil {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		defer file.Close()
+		stat, err := file.Stat()
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		http.ServeContent(w, r, name, stat.ModTime(), file)
+	}
+}
+
+func (a *App) shutdown(srv *http.Server) error {
+	a.logger.Info("shutting down gracefully...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		a.logger.Error("failed to shutdown HTTP server", "err", err)
+	}
+	a.pool.Close()
+	a.logger.Info("shutdown complete. Goodbye!")
+	return nil
+}
+
+func buildLogger(logLevel, env string) *slog.Logger {
+	var level slog.Level
+	switch logLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if env == "production" {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+	return logger
+}
+
+func buildStaticFS(env string) (http.FileSystem, error) {
+	if env == "production" {
+		subFS, err := fs.Sub(web.Assets, "dist")
+		if err != nil {
+			return nil, err
+		}
+		return http.FS(subFS), nil
+	}
+	return http.Dir("web/dist"), nil
+}

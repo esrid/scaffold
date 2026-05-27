@@ -1,0 +1,82 @@
+package store
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/oops"
+)
+
+func (s *Store) WithinTransaction(ctx context.Context, tFunc func(pgx.Tx) error) (err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return oops.Code("db_begin_failed").Wrap(err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback(ctx)
+			panic(p)
+		} else if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	if err = tFunc(tx); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return oops.Code("db_commit_failed").Wrap(err)
+	}
+	return nil
+}
+
+func DecorateError(err error, op string) error {
+	if err == nil {
+		return nil
+	}
+	o := oops.Code("database_error").With("op", op)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return o.With("pg_code", pgErr.Code).With("pg_message", pgErr.Message).Wrap(err)
+	}
+	return o.Wrap(err)
+}
+
+func IsUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func queryOne[T any](ctx context.Context, pool *pgxpool.Pool, query string, args ...any) (T, error) {
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		var zero T
+		return zero, DecorateError(err, "queryOne")
+	}
+	v, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[T])
+	if err != nil {
+		var zero T
+		if errors.Is(err, pgx.ErrNoRows) {
+			return zero, err
+		}
+		return zero, DecorateError(err, "queryOne")
+	}
+	return v, nil
+}
+
+func queryMany[T any](ctx context.Context, pool *pgxpool.Pool, query string, args ...any) ([]T, error) {
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, DecorateError(err, "queryMany")
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToStructByName[T])
+	if err != nil {
+		return nil, DecorateError(err, "queryMany")
+	}
+	return items, nil
+}

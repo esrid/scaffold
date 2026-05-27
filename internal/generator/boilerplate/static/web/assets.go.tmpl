@@ -1,0 +1,15 @@
+package web
+
+import "embed"
+
+//go:embed dist/*.js dist/*.css
+var Assets embed.FS
+
+//go:embed dist/index.html
+var IndexHTML []byte
+
+//go:embed dist/robots.txt
+var RobotsTXT []byte
+
+//go:embed dist/sitemap.xml
+var SitemapXML []byte

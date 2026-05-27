@@ -1,0 +1,158 @@
+package http
+
+import (
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"{{.Module}}/internal/core/domain"
+	"{{.Module}}/internal/core/ports"
+	"github.com/go-chi/chi/v5"
+)
+
+type CRUDHandler[T domain.Identifiable[T]] struct {
+	service ports.CRUDService[T]
+	logger  *slog.Logger
+	entity  string
+	prefix  string
+}
+
+func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], entity string, prefix string, logger *slog.Logger) *CRUDHandler[T] {
+	if prefix == "" {
+		lower := strings.ToLower(entity)
+		if strings.HasSuffix(lower, "y") {
+			prefix = "/api/" + lower[:len(lower)-1] + "ies"
+		} else {
+			prefix = "/api/" + lower + "s"
+		}
+	}
+	return &CRUDHandler[T]{
+		service: service,
+		entity:  entity,
+		prefix:  prefix,
+		logger:  logger,
+	}
+}
+
+func (h *CRUDHandler[T]) Prefix() string { return h.prefix }
+
+func (h *CRUDHandler[T]) RegisterRoutes(r chi.Router) {
+	r.Get("/{id}", h.Get)
+	r.Get("/", h.List)
+	r.Post("/", h.Create)
+	r.Put("/{id}", h.Update)
+	r.Delete("/{id}", h.Delete)
+}
+
+func (h *CRUDHandler[T]) Get(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	p, err := h.service.Get(r.Context(), id)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, p)
+}
+
+func (h *CRUDHandler[T]) List(w http.ResponseWriter, r *http.Request) {
+	items, err := h.service.List(r.Context(), 10, 0)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, items)
+}
+
+func (h *CRUDHandler[T]) Create(w http.ResponseWriter, r *http.Request) {
+	var item T
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		h.logger.Warn("failed to decode create payload", "err", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	created, err := h.service.Create(r.Context(), item)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	w.Header().Set("Location", h.prefix+"/"+(*created).GetID())
+	respondJSON(w, http.StatusCreated, created)
+}
+
+func (h *CRUDHandler[T]) Update(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var item T
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		h.logger.Warn("failed to decode update payload", "err", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	item = item.WithID(id)
+	updated, err := h.service.Update(r.Context(), item)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, updated)
+}
+
+func (h *CRUDHandler[T]) Delete(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.service.Delete(r.Context(), id); err != nil {
+		respondError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func respondJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func respondError(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var nfErr *domain.NotFoundError
+	if errors.As(err, &nfErr) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "not_found",
+			"entity": nfErr.Entity,
+			"id":     nfErr.ID,
+			"msg":    nfErr.Error(),
+		})
+		return
+	}
+
+	var aeErr *domain.AlreadyExistsError
+	if errors.As(err, &aeErr) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "already_exists",
+			"entity": aeErr.Entity,
+			"field":  aeErr.Field,
+			"value":  aeErr.Value,
+			"msg":    aeErr.Error(),
+		})
+		return
+	}
+
+	var valErr *domain.ValidationError
+	if errors.As(err, &valErr) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "validation_failed",
+			"entity": valErr.Entity,
+			"fields": valErr.Errors,
+			"msg":    valErr.Error(),
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusInternalServerError)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}

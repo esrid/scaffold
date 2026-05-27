@@ -1,0 +1,1 @@
+-- scaffold: model table definitions are added here by `scaffold gen`

@@ -1,0 +1,6 @@
+package domain
+
+type Identifiable[T any] interface {
+	GetID() string
+	WithID(id string) T
+}

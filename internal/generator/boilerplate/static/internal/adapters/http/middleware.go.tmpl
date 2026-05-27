@@ -1,0 +1,91 @@
+package http
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5/middleware"
+)
+
+func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			t1 := time.Now()
+
+			defer func() {
+				scheme := "http"
+				if r.TLS != nil {
+					scheme = "https"
+				}
+
+				status := ww.Status()
+				level := slog.LevelInfo
+				switch {
+				case status >= 500:
+					level = slog.LevelError
+				case status >= 400:
+					level = slog.LevelWarn
+				}
+
+				if logger.Enabled(r.Context(), level) {
+					logger.LogAttrs(r.Context(), level, "HTTP request",
+						slog.String("method", r.Method),
+						slog.String("path", r.URL.Path),
+						slog.String("scheme", scheme),
+						slog.Int("status", status),
+						slog.Duration("duration", time.Since(t1)),
+						slog.Int("bytes", ww.BytesWritten()),
+						slog.String("remote_ip", r.RemoteAddr),
+						slog.String("request_id", middleware.GetReqID(r.Context())),
+					)
+				}
+			}()
+
+			next.ServeHTTP(ww, r)
+		}
+		return http.HandlerFunc(fn)
+	}
+}
+
+func StructuredRecoverer(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rvr := recover(); rvr != nil {
+					if rvr == http.ErrAbortHandler {
+						panic(rvr)
+					}
+					logger.LogAttrs(r.Context(), slog.LevelError, "HTTP request panic recovered",
+						slog.Any("panic", rvr),
+						slog.String("method", r.Method),
+						slog.String("path", r.URL.Path),
+						slog.String("request_id", middleware.GetReqID(r.Context())),
+					)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"error":"internal_server_error","msg":"An unexpected panic was recovered"}`))
+				}
+			}()
+			next.ServeHTTP(w, r)
+		}
+		return http.HandlerFunc(fn)
+	}
+}
+
+func CORS() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
+		return http.HandlerFunc(fn)
+	}
+}

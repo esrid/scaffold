@@ -1,0 +1,19 @@
+package ports
+
+import "context"
+
+type CRUDService[T any] interface {
+	Get(ctx context.Context, id string) (*T, error)
+	List(ctx context.Context, limit, offset int) ([]T, error)
+	Create(ctx context.Context, p T) (*T, error)
+	Update(ctx context.Context, p T) (*T, error)
+	Delete(ctx context.Context, id string) error
+}
+
+type CRUDStore[T any] interface {
+	Get(ctx context.Context, id string) (T, error)
+	List(ctx context.Context, limit, offset int) ([]T, error)
+	Create(ctx context.Context, p T) (T, error)
+	Update(ctx context.Context, p T) (T, error)
+	Delete(ctx context.Context, id string) error
+}
