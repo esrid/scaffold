@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -67,7 +68,7 @@ func (h *CRUDHandler[T]) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *CRUDHandler[T]) Create(w http.ResponseWriter, r *http.Request) {
 	var item T
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+	if err := decodeJSON(w, r, &item); err != nil {
 		h.logger.Warn("failed to decode create payload", "err", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -84,7 +85,7 @@ func (h *CRUDHandler[T]) Create(w http.ResponseWriter, r *http.Request) {
 func (h *CRUDHandler[T]) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var item T
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+	if err := decodeJSON(w, r, &item); err != nil {
 		h.logger.Warn("failed to decode update payload", "err", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -107,17 +108,34 @@ func (h *CRUDHandler[T]) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func decodeJSON[T any](w http.ResponseWriter, r *http.Request, dst *T) error {
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(dst); err != nil {
+		return err
+	}
+	if err := d.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("request body must contain exactly one JSON object")
+	}
+	return nil
+}
+
 func respondJSON(w http.ResponseWriter, status int, data any) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		http.Error(w, `{"error":"Internal Server Error"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
+	_, _ = w.Write(payload)
 }
 
 func respondError(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "application/json")
 
-	var nfErr *domain.NotFoundError
-	if errors.As(err, &nfErr) {
+	if nfErr, ok := errors.AsType[*domain.NotFoundError](err); ok {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":  "not_found",
@@ -128,8 +146,7 @@ func respondError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	var aeErr *domain.AlreadyExistsError
-	if errors.As(err, &aeErr) {
+	if aeErr, ok := errors.AsType[*domain.AlreadyExistsError](err); ok {
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":  "already_exists",
@@ -141,8 +158,7 @@ func respondError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	var valErr *domain.ValidationError
-	if errors.As(err, &valErr) {
+	if valErr, ok := errors.AsType[*domain.ValidationError](err); ok {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":  "validation_failed",
