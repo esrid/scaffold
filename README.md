@@ -90,25 +90,46 @@ Running `gen` again on an existing model **adds or removes fields** and writes a
 #### Field syntax
 
 ```
-name:type           nullable field (Go pointer, e.g. *string)
-name:type!          NOT NULL field
-name:type{unique}   UNIQUE constraint
-name:type{index}    database index
-name:type{unique,index}  both
+name:type              nullable field (Go pointer, e.g. *string)
+name:type!             NOT NULL field
+name:type{mod}         field with modifier
+name:type{mod,mod}!    multiple modifiers, NOT NULL
 ```
+
+The `!` suffix and the `nn` modifier are equivalent — use whichever reads better.
 
 #### Types
 
-| Alias | Go type | SQL type |
-|-------|---------|----------|
-| `string`, `text` | `string` | `TEXT` |
-| `int`, `int64` | `int` / `int64` | `INTEGER` |
-| `float`, `float64` | `float64` | `REAL` / `DOUBLE PRECISION` |
-| `bool` | `bool` | `BOOLEAN` / `INTEGER` |
-| `time`, `datetime` | `time.Time` | `DATETIME` / `TIMESTAMPTZ` |
-| `json` | `json.RawMessage` | `TEXT` / `JSONB` |
+| Alias | Go type | SQLite type | Postgres type |
+|-------|---------|-------------|---------------|
+| `string`, `text` | `string` | `TEXT` | `TEXT` |
+| `string`, `text` + size | `string` | `VARCHAR(n)` | `VARCHAR(n)` |
+| `int` | `int` | `INTEGER` | `INTEGER` |
+| `int64` | `int64` | `INTEGER` | `BIGINT` |
+| `float`, `float64` | `float64` | `REAL` | `DOUBLE PRECISION` |
+| `bool` | `bool` | `INTEGER` | `BOOLEAN` |
+| `time`, `datetime` | `time.Time` | `DATETIME` | `TIMESTAMPTZ` |
+| `json` | `json.RawMessage` | `TEXT` | `JSONB` |
 
 `id`, `created_at`, and `updated_at` are auto-managed — do not declare them.
+
+#### Modifiers
+
+Modifiers go inside `{…}`, comma-separated. They can be freely combined.
+
+| Modifier | Applies to | SQL emitted | Notes |
+|----------|-----------|-------------|-------|
+| `nn` | any | `NOT NULL` | alias for `!` suffix |
+| `unique` | any | `UNIQUE` | |
+| `index` | any | separate `CREATE INDEX` | |
+| `<n>` (number) | `string`, `text` | `VARCHAR(n)` | e.g. `{92}` |
+| `default=val` | any | `DEFAULT 'val'` | string-quoted |
+| `fk=table` | any | `REFERENCES table(id)` | SQLite: no ON DELETE clause by default; Postgres: `ON DELETE RESTRICT` |
+| `fk=table` + `cascade` | any | `REFERENCES table(id) ON DELETE CASCADE` | both DBs |
+| `fk=table` + `setnull` | any | `REFERENCES table(id) ON DELETE SET NULL` | both DBs |
+| `check=expr` | any | `CHECK (expr)` | raw SQL expression |
+
+`cascade` and `setnull` require `fk=` and are mutually exclusive.
 
 #### Examples
 
@@ -116,8 +137,26 @@ name:type{unique,index}  both
 # Basic model
 scaffold gen Product name:string! price:float! sku:string{unique}
 
-# Nullable field (no !) → Go pointer *int
+# Nullable field (no !) → Go pointer *string
 scaffold gen Article title:string! body:string views:int
+
+# NOT NULL via nn modifier (equivalent to !)
+scaffold gen Order status:string{nn,default=pending}
+
+# VARCHAR(n) — fixed-length string column
+scaffold gen User username:string{92}! email:string{255,unique}!
+
+# CHECK constraint
+scaffold gen Product price:float{check=price>0}! stock:int{check=stock>=0}
+
+# Foreign key with cascade delete
+scaffold gen Post user_id:string{fk=users,cascade}! title:string!
+
+# Foreign key with set-null on delete
+scaffold gen Comment author_id:string{fk=users,setnull} body:string!
+
+# Combine: FK + cascade + index
+scaffold gen Post user_id:string{fk=users,cascade,index}! title:string!
 
 # JSON field
 scaffold gen Event payload:json! metadata:json

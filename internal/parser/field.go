@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -103,6 +104,55 @@ func parseField(arg string) (Field, error) {
 	}
 
 	goType := types[0]
+	sqlType := types[1]
+
+	// Process special modifiers: nn (notnull alias), numeric size (VARCHAR), others pass through.
+	filtered := make([]string, 0, len(modifiers))
+	varcharLen := 0
+	for _, m := range modifiers {
+		switch {
+		case m == "nn":
+			notNull = true
+		case isNumeric(m):
+			if varcharLen != 0 {
+				return Field{}, fmt.Errorf("field %q: multiple size modifiers", name)
+			}
+			n, _ := strconv.Atoi(m)
+			if n <= 0 {
+				return Field{}, fmt.Errorf("field %q: size modifier must be positive", name)
+			}
+			varcharLen = n
+		default:
+			filtered = append(filtered, m)
+		}
+	}
+	if varcharLen > 0 {
+		if typeName != "string" && typeName != "text" {
+			return Field{}, fmt.Errorf("field %q: size modifier only valid for string/text types", name)
+		}
+		sqlType = fmt.Sprintf("VARCHAR(%d)", varcharLen)
+	}
+	modifiers = filtered
+
+	// Validate FK-dependent modifiers.
+	hasCascade, hasSetNull, hasFK := false, false, false
+	for _, m := range modifiers {
+		switch {
+		case m == "cascade":
+			hasCascade = true
+		case m == "setnull":
+			hasSetNull = true
+		case strings.HasPrefix(m, "fk="):
+			hasFK = true
+		}
+	}
+	if (hasCascade || hasSetNull) && !hasFK {
+		return Field{}, fmt.Errorf("field %q: cascade/setnull requires fk= modifier", name)
+	}
+	if hasCascade && hasSetNull {
+		return Field{}, fmt.Errorf("field %q: cascade and setnull are mutually exclusive", name)
+	}
+
 	// nullable fields use pointer types (except json.RawMessage)
 	if !notNull && goType != "json.RawMessage" {
 		goType = "*" + goType
@@ -111,7 +161,7 @@ func parseField(arg string) (Field, error) {
 	return Field{
 		Name:      name,
 		GoType:    goType,
-		SQLType:   types[1],
+		SQLType:   sqlType,
 		NotNull:   notNull,
 		Modifiers: modifiers,
 	}, nil
@@ -133,4 +183,17 @@ func validateFieldName(name string) error {
 func validTypes() string {
 	types := []string{"string", "text", "int", "int64", "float", "float64", "bool", "time", "datetime", "json"}
 	return strings.Join(types, ", ")
+}
+
+// isNumeric reports whether s is a non-empty string of ASCII digits.
+func isNumeric(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -121,29 +121,56 @@ func pgSQLType(f parser.Field) string {
 	}
 }
 
-// buildSQLModifiers resolves field modifiers (like fk, default, unique) per database.
+// buildSQLModifiers resolves field modifiers (like fk, default, unique, check, cascade, setnull) per database.
 func buildSQLModifiers(mods []string, db string) string {
+	hasCascade := containsMod(mods, "cascade")
+	hasSetNull := containsMod(mods, "setnull")
+
 	var parts []string
 	for _, m := range mods {
 		switch {
 		case m == "unique":
 			parts = append(parts, "UNIQUE")
+		case m == "cascade" || m == "setnull" || m == "index":
+			// cascade/setnull consumed by fk= below; index handled separately
 		case strings.HasPrefix(m, "default="):
 			val := strings.TrimPrefix(m, "default=")
 			parts = append(parts, fmt.Sprintf("DEFAULT '%s'", val))
 		case strings.HasPrefix(m, "fk="):
 			table := strings.ToLower(strings.TrimPrefix(m, "fk="))
-			if db == "postgres" {
-				parts = append(parts, fmt.Sprintf("REFERENCES %s(id) ON DELETE RESTRICT", table))
+			var onDelete string
+			switch {
+			case hasCascade:
+				onDelete = "CASCADE"
+			case hasSetNull:
+				onDelete = "SET NULL"
+			case db == "postgres":
+				onDelete = "RESTRICT"
+			}
+			if onDelete != "" {
+				parts = append(parts, fmt.Sprintf("REFERENCES %s(id) ON DELETE %s", table, onDelete))
 			} else {
 				parts = append(parts, fmt.Sprintf("REFERENCES %s(id)", table))
 			}
+		case strings.HasPrefix(m, "check="):
+			expr := strings.TrimPrefix(m, "check=")
+			parts = append(parts, fmt.Sprintf("CHECK (%s)", expr))
 		}
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return " " + strings.Join(parts, " ")
+}
+
+// containsMod reports whether mods contains the exact modifier m.
+func containsMod(mods []string, m string) bool {
+	for _, mod := range mods {
+		if mod == m {
+			return true
+		}
+	}
+	return false
 }
 
 // hasIndexModifier helper checks if an index should be created.
