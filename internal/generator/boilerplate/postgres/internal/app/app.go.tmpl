@@ -1,15 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	httpAdapter "{{.Module}}/internal/adapters/http"
@@ -28,12 +27,15 @@ type App struct {
 	fileSystem http.FileSystem
 }
 
-func NewApp(cfg Config) (*App, error) {
+func NewApp(ctx context.Context, cfg Config) (*App, error) {
 	logger := buildLogger(cfg.LogLevel, cfg.Env)
 
-	pool, err := store.Open(context.Background(), cfg.DatabaseURL)
+	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	pool, err := store.Open(connCtx, cfg.DatabaseURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open store: %w", err)
 	}
 
 	fileSystem, err := buildStaticFS(cfg.Env)
@@ -50,27 +52,27 @@ func NewApp(cfg Config) (*App, error) {
 	}, nil
 }
 
-func (a *App) Run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func (a *App) Run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", a.cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", a.cfg.Addr, err)
+	}
 
 	srv := &http.Server{
-		Addr:              a.cfg.Addr,
 		Handler:           a.buildRouter(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      65 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		BaseContext: func(net.Listener) context.Context {
-			return context.Background()
+			return ctx
 		},
 	}
 
-	a.logger.Info("HTTP Server listening", "addr", a.cfg.Addr, "log_level", a.cfg.LogLevel)
+	a.logger.Info("HTTP Server listening", "addr", ln.Addr().String(), "log_level", a.cfg.LogLevel)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			a.logger.Error("server crashed", "err", err)
-			stop()
 		}
 	}()
 
@@ -115,11 +117,13 @@ func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"healthy","database":"connected"}`))
 }
 
+var buildTime = time.Now()
+
 func (a *App) serveFile(name, contentType string, prodBytes []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 		if a.cfg.Env == "production" {
-			_, _ = w.Write(prodBytes)
+			http.ServeContent(w, r, name, buildTime, bytes.NewReader(prodBytes))
 			return
 		}
 		file, err := a.fileSystem.Open(name)
