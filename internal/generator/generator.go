@@ -629,8 +629,8 @@ func buildMigrationCtx(model *parser.Model, added, removed []parser.Field, db st
 	case "postgres":
 		idDef = "id UUID PRIMARY KEY DEFAULT uuidv7()"
 	case "sqlite":
-		idDef = "id TEXT PRIMARY KEY"
-	default: // legacy sqlite with sqlean
+		idDef = "id TEXT PRIMARY KEY DEFAULT (uuid7())"
+	default:
 		idDef = "id TEXT PRIMARY KEY DEFAULT (uuid7())"
 	}
 	return migrationCtx{
