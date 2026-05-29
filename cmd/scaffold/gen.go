@@ -17,33 +17,82 @@ var (
 var genCmd = &cobra.Command{
 	Use:   "gen <Model> [field:type{modifier}!...]",
 	Short: "Generate or update scaffold for a model",
-	Long: `Generate or update the full CRUD scaffold for a model (domain, ports, service, store, migration, registry).
+	Long: `Generate or update the full CRUD scaffold for a model.
 
-Running gen again on an existing model adds/removes fields and creates a diff migration.
+Must be run from inside a project created by "scaffold init" (looks for .scaffold/models.json).
+Running gen again on an existing model adds/removes fields and writes a diff migration.
 
 FIELD SYNTAX
   field:type          nullable field (Go pointer, e.g. *string)
   field:type!         NOT NULL field (required value)
-  field:type{unique}  adds UNIQUE constraint
-  field:type{index}   adds an index
-  field:type{unique,index}  both constraints
+  field:type{mod}     field with a modifier
+  field:type{mod,mod}! multiple modifiers, NOT NULL
+
+  Do NOT declare id, created_at, or updated_at — they are auto-managed.
 
 TYPES
-  string    TEXT
-  int       INTEGER / BIGINT
-  float     REAL / DOUBLE PRECISION
-  bool      BOOLEAN (postgres) / INTEGER (sqlite)
-  json      JSON / JSONB
-  time      DATETIME / TIMESTAMPTZ
+  string, text        TEXT (VARCHAR(n) when a size modifier is given)
+  int                 INTEGER
+  int64               BIGINT
+  float, float64      REAL / DOUBLE PRECISION
+  bool                BOOLEAN (postgres) / INTEGER (sqlite)
+  json                TEXT / JSONB
+  time, datetime      DATETIME / TIMESTAMPTZ
+
+MODIFIERS  (go inside {…}, comma-separated)
+  nn                  NOT NULL — alias for ! suffix
+  unique              UNIQUE constraint
+  index               separate CREATE INDEX
+  <n>                 VARCHAR(n) for string/text, e.g. {92}
+  default=val         DEFAULT 'val'
+  fk=table            REFERENCES table(id)
+  cascade             ON DELETE CASCADE  (requires fk=; mutually exclusive with setnull)
+  setnull             ON DELETE SET NULL (requires fk=; mutually exclusive with cascade)
+  check=expr          CHECK (expr) — raw SQL expression
+
+GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
+  internal/core/domain/product.go          struct + Validate() — fields patched via markers
+  internal/core/ports/product.go           repository interface — written once, never touched
+  internal/core/services/product_service_gen.go  CRUD delegation — always regenerated
+  internal/core/services/product_service.go      your business logic — never overwritten
+  internal/adapters/store/product_store_gen.go   generated queries — always regenerated
+  internal/adapters/store/product_store.go       your custom queries — never overwritten
+  internal/app/registry.go                 wiring — always regenerated
+  internal/adapters/store/migrations/      numbered SQL migration file
+
+REST ROUTES REGISTERED
+  GET    /api/products
+  GET    /api/products/{id}
+  POST   /api/products
+  PUT    /api/products/{id}
+  DELETE /api/products/{id}
 
 EXAMPLES
-  # Create a Product model with three fields
+  # Basic model
   scaffold gen Product name:string! price:float! sku:string{unique}
 
-  # Nullable fields (no !) become Go pointers (*string, *int, ...)
+  # Nullable field (no !) → Go pointer *string
   scaffold gen Article title:string! body:string views:int
 
-  # JSON field (stored as JSONB on postgres, JSON on sqlite)
+  # NOT NULL via nn modifier
+  scaffold gen Order status:string{nn,default=pending}
+
+  # VARCHAR(n) — fixed-length string column
+  scaffold gen User username:string{92}! email:string{255,unique}!
+
+  # CHECK constraint
+  scaffold gen Product price:float{check=price>0}! stock:int{check=stock>=0}
+
+  # Foreign key with cascade delete
+  scaffold gen Post user_id:string{fk=users,cascade}! title:string!
+
+  # Foreign key with set-null on delete
+  scaffold gen Comment author_id:string{fk=users,setnull} body:string!
+
+  # FK + cascade + index (modifiers combine freely)
+  scaffold gen Post user_id:string{fk=users,cascade,index}! title:string!
+
+  # JSON field (JSONB on postgres, TEXT on sqlite)
   scaffold gen Event payload:json! metadata:json
 
   # Add a field to an existing model (generates ALTER TABLE migration)

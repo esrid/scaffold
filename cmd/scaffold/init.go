@@ -24,8 +24,38 @@ var initCmd = &cobra.Command{
 	Short: "Bootstrap a new project from the boilerplate",
 	Long: `Bootstrap a complete Go hexagonal-architecture project from the built-in boilerplate.
 
-Creates the target directory (or uses the current one), writes all source files,
-runs go mod tidy, and writes .scaffold/models.json so scaffold gen works immediately.
+Creates the target directory, writes all source files, runs go mod tidy, and writes
+.scaffold/models.json so "scaffold gen" can track models immediately.
+
+GENERATED PROJECT STRUCTURE
+  myapp/
+  ├── main.go
+  ├── Makefile
+  ├── .env.example
+  ├── .scaffold/models.json        manifest — tracks all generated models
+  └── internal/
+      ├── app/
+      │   ├── app.go               wires everything together
+      │   ├── config.go            env-based config
+      │   └── registry.go          auto-regenerated on every gen/destroy
+      ├── core/
+      │   ├── domain/errors.go     NotFoundError, ValidationError, etc.
+      │   ├── ports/               repository interfaces (one file per model)
+      │   └── services/            service stubs (one gen + one user file per model)
+      └── adapters/
+          ├── http/
+          │   ├── crud_handler.go  generic Chi CRUD handler (all models share it)
+          │   └── middleware.go
+          └── store/
+              ├── schema.sql       full schema
+              ├── migrations/      numbered SQL migration files
+              └── {model}_store*.go  generated + user store files
+
+MAKEFILE TARGETS
+  make run       build frontend + run server (go run) on :8080
+  make build     build frontend + compile binary to bin/server
+  make build-fe  esbuild TypeScript + CSS only
+  make clean     remove web/dist and bin/
 
 EXAMPLES
   # Create ./myapp with a Postgres database
