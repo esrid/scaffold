@@ -83,7 +83,12 @@ func walkAndWrite(dir, srcPrefix string, data BoilerplateData) error {
 }
 
 func renderTemplate(name, tmplStr string, data BoilerplateData) (string, error) {
-	tmpl, err := template.New(name).Parse(tmplStr)
+	t := template.New(name)
+	// README embeds Go/HTML template examples that use {{ }}, so use alternate delimiters.
+	if strings.HasSuffix(name, "README.md.tmpl") {
+		t = t.Delims("[[", "]]")
+	}
+	tmpl, err := t.Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parse %s: %w", name, err)
 	}
