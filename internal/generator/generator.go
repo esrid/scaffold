@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -31,8 +32,40 @@ func New(root, modulePath string, manifest *parser.Manifest, dryRun bool) *Gener
 	}
 }
 
-func (g *Generator) isPostgres() bool {
-	return g.manifest.IsPostgres()
+func (g *Generator) isPostgres() bool { return g.manifest.IsPostgres() }
+func (g *Generator) isGRPC() bool     { return g.manifest.IsGRPC() }
+func (g *Generator) isSSR() bool      { return g.manifest.IsSSR() }
+
+// protoTemplateFuncs returns template.FuncMap needed by protoTmpl and grpcHandlerTmpl.
+func protoTemplateFuncs() template.FuncMap {
+	return template.FuncMap{
+		// fieldNum returns the proto field number: base + index.
+		"fieldNum": func(idx, base int) int { return base + idx },
+		// protoToDomain renders the right-hand side for domain struct init from a proto request.
+		"protoToDomain": func(f templateField, recv string) string {
+			getter := "Get" + f.GoName + "()"
+			switch {
+			case f.IsTime && f.IsPointer:
+				return `func() *time.Time { if v := ` + recv + `.` + getter + `; v != nil { t := v.AsTime(); return &t }; return nil }()`
+			case f.IsTime:
+				return recv + "." + getter + ".AsTime()"
+			default:
+				return recv + "." + getter
+			}
+		},
+		// domainToProto renders the right-hand side for proto struct init from a domain value.
+		"domainToProto": func(f templateField, recv string) string {
+			field := recv + "." + f.GoName
+			switch {
+			case f.IsTime && f.IsPointer:
+				return `func() *timestamppb.Timestamp { if ` + field + ` != nil { return timestamppb.New(*` + field + `) }; return nil }()`
+			case f.IsTime:
+				return "timestamppb.New(" + field + ")"
+			default:
+				return field
+			}
+		},
+	}
 }
 
 // Result holds the list of file operations performed.
@@ -94,6 +127,11 @@ func (g *Generator) Scaffold(model *parser.Model) (*Result, error) {
 		return nil, err
 	}
 
+	// app.go routes section is always regenerated
+	if err := g.writeRoutes(res); err != nil {
+		return nil, err
+	}
+
 	return res, nil
 }
 
@@ -108,6 +146,25 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 		filepath.Join("internal", "core", "services", model.Snake()+"_service.go"),
 		filepath.Join("internal", "adapters", "store", model.Snake()+"_store_gen.go"),
 		filepath.Join("internal", "adapters", "store", model.Snake()+"_store.go"),
+	}
+	if g.isSSR() {
+		files = append(files,
+			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"),
+		)
+		// Remove SSR template directory
+		tmplDir := filepath.Join(g.root, "web", "templates", model.Plural())
+		if !g.dryRun {
+			if err := os.RemoveAll(tmplDir); err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("destroy: remove templates dir %s: %w", tmplDir, err)
+			}
+		}
+		res.Deleted = append(res.Deleted, filepath.Join("web", "templates", model.Plural()))
+	}
+	if g.isGRPC() {
+		files = append(files,
+			filepath.Join("api", "proto", "v1", model.Snake()+".proto"),
+			filepath.Join("internal", "adapters", "grpc", model.Snake()+"_handler_gen.go"),
+		)
 	}
 
 	for _, rel := range files {
@@ -135,6 +192,11 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 
 	// Regenerate registry without this model
 	if err := g.writeRegistry(res); err != nil {
+		return nil, err
+	}
+
+	// Regenerate routes without this model
+	if err := g.writeRoutes(res); err != nil {
 		return nil, err
 	}
 
@@ -205,6 +267,43 @@ func (g *Generator) scaffoldCreate(model *parser.Model, res *Result) error {
 		return err
 	}
 
+	if g.isSSR() {
+		// internal/adapters/http/{model}_handler_gen.go — always regenerated
+		ssrHandlerPath := filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go")
+		if err := g.writeSSRHandler(ssrHandlerPath, model, res); err != nil {
+			return err
+		}
+		// internal/adapters/http/{model}_handler.go — written once
+		ssrUserPath := filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go")
+		if err := g.writeGoFileOnce(ssrUserPath, ssrHandlerUserTmpl, map[string]string{
+			"Name": model.Name,
+		}, res); err != nil {
+			return err
+		}
+		// web/templates/{plural}/*.html — SSR HTML templates (always regenerated)
+		if err := g.writeSSRTemplates(model, res); err != nil {
+			return err
+		}
+	}
+
+	if g.isGRPC() {
+		// api/proto/v1/{model}.proto
+		protoPath := filepath.Join("api", "proto", "v1", model.Snake()+".proto")
+		if err := g.writeProto(protoPath, model, res); err != nil {
+			return err
+		}
+		// internal/adapters/grpc/{model}_handler_gen.go
+		handlerPath := filepath.Join("internal", "adapters", "grpc", model.Snake()+"_handler_gen.go")
+		if err := g.writeGRPCHandler(handlerPath, model, res); err != nil {
+			return err
+		}
+		// internal/adapters/grpc/shared.go — created once
+		sharedPath := filepath.Join("internal", "adapters", "grpc", "shared.go")
+		if err := g.writeGRPCShared(sharedPath, res); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -261,6 +360,19 @@ func (g *Generator) scaffoldUpdate(model *parser.Model, res *Result) error {
 		if err := g.writeAlterMigration(model, added, removed, res); err != nil {
 			return err
 		}
+	}
+
+	if g.isSSR() {
+		// Regenerate SSR handler and templates on every update (fields may have changed)
+		ssrHandlerPath := filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go")
+		if err := g.writeSSRHandler(ssrHandlerPath, model, res); err != nil {
+			return err
+		}
+		if err := g.writeSSRTemplates(model, res); err != nil {
+			return err
+		}
+		ssrUserPath := filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go")
+		res.Unchanged = append(res.Unchanged, ssrUserPath)
 	}
 
 	return nil
@@ -563,6 +675,200 @@ func (g *Generator) writeDropMigration(model *parser.Model, res *Result) error {
 	return g.writeSQLFile(rel, tmpl, buildMigrationCtx(model, nil, nil, g.manifest.DB), res)
 }
 
+// ---- gRPC ----
+
+func (g *Generator) writeProto(rel string, model *parser.Model, res *Result) error {
+	abs := filepath.Join(g.root, rel)
+	fields := buildTemplateFields(model.Fields, g.manifest.DB)
+	ctx := protoCtx{
+		ModulePath:   g.modulePath,
+		Name:         model.Name,
+		Lower:        model.Lower(),
+		Fields:       fields,
+		CreatedAtIdx: len(fields) + 2,
+		UpdatedAtIdx: len(fields) + 3,
+	}
+	content, err := renderTemplateWithFuncs(protoTmpl, ctx, protoTemplateFuncs())
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	if !g.dryRun {
+		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
+		}
+		if err := os.WriteFile(abs, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+	}
+	if fileExists(abs) {
+		res.Overwritten = append(res.Overwritten, rel)
+	} else {
+		res.Created = append(res.Created, rel)
+	}
+	return nil
+}
+
+func (g *Generator) writeGRPCHandler(rel string, model *parser.Model, res *Result) error {
+	fields := buildTemplateFields(model.Fields, g.manifest.DB)
+	ctx := grpcHandlerCtx{
+		ModulePath: g.modulePath,
+		Name:       model.Name,
+		Lower:      model.Lower(),
+		Fields:     fields,
+	}
+	src, err := renderTemplateWithFuncs(grpcHandlerTmpl, ctx, protoTemplateFuncs())
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	formatted, err := formatter.GoSource(src)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	abs := filepath.Join(g.root, rel)
+	if !g.dryRun {
+		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
+		}
+		if err := os.WriteFile(abs, formatted, 0644); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+	}
+	if fileExists(abs) {
+		res.Overwritten = append(res.Overwritten, rel)
+	} else {
+		res.Created = append(res.Created, rel)
+	}
+	return nil
+}
+
+func (g *Generator) writeGRPCShared(rel string, res *Result) error {
+	abs := filepath.Join(g.root, rel)
+	if fileExists(abs) {
+		res.Unchanged = append(res.Unchanged, rel)
+		return nil
+	}
+	src, err := renderTemplate(grpcSharedTmpl, map[string]string{"ModulePath": g.modulePath})
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	formatted, err := formatter.GoSource(src)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	if !g.dryRun {
+		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
+		}
+		if err := os.WriteFile(abs, formatted, 0644); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+	}
+	res.Created = append(res.Created, rel)
+	return nil
+}
+
+// ---- SSR ----
+
+func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result) error {
+	fields := buildTemplateFields(model.Fields, g.manifest.DB)
+	needsStrconv := false
+	for _, f := range fields {
+		if strings.Contains(f.GoType, "int") || strings.Contains(f.GoType, "float") {
+			needsStrconv = true
+			break
+		}
+	}
+	ctx := ssrHandlerCtx{
+		ModulePath:   g.modulePath,
+		Name:         model.Name,
+		Lower:        model.Lower(),
+		Plural:       model.Plural(),
+		Fields:       fields,
+		NeedsStrconv: needsStrconv,
+	}
+	src, err := renderTemplate(ssrHandlerTmpl, ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	formatted, err := formatter.GoSource(src)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	abs := filepath.Join(g.root, rel)
+	if !g.dryRun {
+		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
+		}
+		if err := os.WriteFile(abs, formatted, 0644); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+	}
+	if fileExists(abs) {
+		res.Overwritten = append(res.Overwritten, rel)
+	} else {
+		res.Created = append(res.Created, rel)
+	}
+	return nil
+}
+
+func (g *Generator) writeSSRTemplates(model *parser.Model, res *Result) error {
+	fields := buildTemplateFields(model.Fields, g.manifest.DB)
+	ctx := ssrHandlerCtx{
+		ModulePath: g.modulePath,
+		Name:       model.Name,
+		Lower:      model.Lower(),
+		Plural:     model.Plural(),
+		Fields:     fields,
+	}
+
+	type htmlFile struct {
+		relPath string
+		tmpl    string
+	}
+	htmlFiles := []htmlFile{
+		{filepath.Join("web", "templates", model.Plural(), "list.html"), ssrListHTMLTmpl},
+		{filepath.Join("web", "templates", model.Plural(), "form.html"), ssrFormHTMLTmpl},
+		{filepath.Join("web", "templates", model.Plural(), "show.html"), ssrShowHTMLTmpl},
+	}
+
+	for _, hf := range htmlFiles {
+		content, err := renderTemplateHTML(hf.tmpl, ctx)
+		if err != nil {
+			return fmt.Errorf("%s: %w", hf.relPath, err)
+		}
+		abs := filepath.Join(g.root, hf.relPath)
+		if !g.dryRun {
+			if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", filepath.Dir(hf.relPath), err)
+			}
+			if err := os.WriteFile(abs, []byte(content), 0644); err != nil {
+				return fmt.Errorf("write %s: %w", hf.relPath, err)
+			}
+		}
+		res.Created = append(res.Created, hf.relPath)
+	}
+	return nil
+}
+
+// renderTemplateHTML renders a template using [[ ]] as outer delimiters so that
+// {{ }} in the output is treated as literal text (used for generating HTML template files).
+func renderTemplateHTML(tmplStr string, data any) (string, error) {
+	funcs := template.FuncMap{
+		"add": func(a, b int) int { return a + b },
+		"len": func(v []templateField) int { return len(v) },
+	}
+	t := template.New("").Delims("[[", "]]").Funcs(funcs)
+	tmpl, err := t.Parse(tmplStr)
+	if err != nil {
+		return "", fmt.Errorf("parse html template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("execute html template: %w", err)
+	}
+	return buf.String(), nil
+}
+
 // ---- Registry ----
 
 func (g *Generator) writeRegistry(res *Result) error {
@@ -572,20 +878,90 @@ func (g *Generator) writeRegistry(res *Result) error {
 	}
 
 	rel := filepath.Join("internal", "app", "registry.go")
-	tmpl := registryTmpl
-	if g.isPostgres() {
+	var tmpl string
+	switch {
+	case g.isSSR() && g.isPostgres():
+		tmpl = registryTmplSSRPostgres
+	case g.isSSR():
+		tmpl = registryTmplSSR
+	case g.isPostgres():
 		tmpl = registryTmplPostgres
+	default:
+		tmpl = registryTmpl
 	}
 	return g.writeGoFile(rel, tmpl, registryCtx{
 		ModulePath: g.modulePath,
 		Models:     models,
+		GRPC:       g.isGRPC(),
+		IsSSR:      g.isSSR(),
 	}, true, res)
+}
+
+// ---- Routes ----
+
+// writeRoutes patches the // scaffold:routes:start/end block in internal/app/app.go
+// with route mounting statements for all models in the manifest.
+func (g *Generator) writeRoutes(res *Result) error {
+	appPath := filepath.Join(g.root, "internal", "app", "app.go")
+	data, err := os.ReadFile(appPath)
+	if err != nil {
+		// app.go doesn't exist yet (e.g. bare project without boilerplate) — skip
+		return nil
+	}
+
+	// Sort model names for deterministic output
+	names := make([]string, 0, len(g.manifest.Models))
+	for name := range g.manifest.Models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Build the route block content
+	var lines strings.Builder
+	for _, name := range names {
+		if g.isSSR() {
+			fmt.Fprintf(&lines, "\t\tr.Mount(a.registry.Handlers.%s.Prefix(), a.registry.Handlers.%s.Router())\n", name, name)
+		} else {
+			fmt.Fprintf(&lines, "\t\tr.Route(a.registry.Handlers.%s.Prefix(), a.registry.Handlers.%s.RegisterRoutes)\n", name, name)
+		}
+	}
+
+	const startMark = "// scaffold:routes:start"
+	const endMark = "// scaffold:routes:end"
+	newBlock := startMark + "\n" + lines.String() + "\t\t" + endMark
+
+	updated, err := replaceMarkerBlock(string(data), startMark, endMark, newBlock)
+	if err != nil {
+		// Marker not found — app.go has the old single-line comment; skip silently
+		return nil
+	}
+
+	formatted, err := formatter.GoSource(updated)
+	if err != nil {
+		return fmt.Errorf("app.go routes format: %w", err)
+	}
+
+	if !g.dryRun {
+		if err := os.WriteFile(appPath, formatted, 0644); err != nil {
+			return fmt.Errorf("write app.go: %w", err)
+		}
+	}
+	res.Overwritten = append(res.Overwritten, "internal/app/app.go (routes updated)")
+	return nil
 }
 
 // ---- Utilities ----
 
 func renderTemplate(tmplStr string, data any) (string, error) {
-	tmpl, err := template.New("").Parse(tmplStr)
+	return renderTemplateWithFuncs(tmplStr, data, nil)
+}
+
+func renderTemplateWithFuncs(tmplStr string, data any, funcs template.FuncMap) (string, error) {
+	t := template.New("")
+	if len(funcs) > 0 {
+		t = t.Funcs(funcs)
+	}
+	tmpl, err := t.Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
 	}

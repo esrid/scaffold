@@ -11,7 +11,7 @@ import (
 	"text/template"
 )
 
-//go:embed static sqlite postgres
+//go:embed static sqlite postgres grpc rest ssr
 var files embed.FS
 
 // BoilerplateData is passed to all .tmpl files during rendering.
@@ -19,11 +19,16 @@ type BoilerplateData struct {
 	Module  string // e.g. "github.com/user/myapp"
 	DB      string // "sqlite" | "postgres"
 	AppName string // e.g. "myapp"
+	GRPC    bool   // true if gRPC support is enabled
+	APIMode string // "rest" | "ssr" | "grpc"
+	IsSSR   bool
+	IsREST  bool
+	IsGRPC  bool
 }
 
-// Generate writes the full boilerplate for the chosen DB into dir.
-// It walks the static/ tree first, then the db-specific tree (sqlite/ or postgres/).
-func Generate(dir, module, db string) error {
+// Generate writes the full boilerplate for the chosen DB and API mode into dir.
+// Walk order: static/ → {db}/ → {api_mode}/ (→ grpc/ if gRPC)
+func Generate(dir, module, db, apiMode string) error {
 	parts := strings.Split(module, "/")
 	appName := parts[len(parts)-1]
 
@@ -31,9 +36,24 @@ func Generate(dir, module, db string) error {
 		Module:  module,
 		DB:      db,
 		AppName: appName,
+		GRPC:    apiMode == "grpc",
+		APIMode: apiMode,
+		IsSSR:   apiMode == "ssr",
+		IsREST:  apiMode == "rest",
+		IsGRPC:  apiMode == "grpc",
 	}
 
-	for _, src := range []string{"static", db} {
+	sources := []string{"static", db}
+	switch apiMode {
+	case "ssr":
+		sources = append(sources, "ssr")
+	case "grpc":
+		sources = append(sources, "rest", "grpc")
+	default: // "rest"
+		sources = append(sources, "rest")
+	}
+
+	for _, src := range sources {
 		if err := walkAndWrite(dir, src, data); err != nil {
 			return fmt.Errorf("boilerplate %s: %w", src, err)
 		}

@@ -21,12 +21,13 @@ var genCmd = &cobra.Command{
 
 Must be run from inside a project created by "scaffold init" (looks for .scaffold/models.json).
 Running gen again on an existing model adds/removes fields and writes a diff migration.
+Routes are mounted automatically in app.go.
 
 FIELD SYNTAX
-  field:type          nullable field (Go pointer, e.g. *string)
-  field:type!         NOT NULL field (required value)
-  field:type{mod}     field with a modifier
-  field:type{mod,mod}! multiple modifiers, NOT NULL
+  field:type            nullable field (Go pointer, e.g. *string)
+  field:type!           NOT NULL field
+  field:type{mod}       field with a modifier
+  field:type{mod,mod}!  multiple modifiers, NOT NULL
 
   Do NOT declare id, created_at, or updated_at — they are auto-managed.
 
@@ -51,21 +52,36 @@ MODIFIERS  (go inside {…}, comma-separated)
   check=expr          CHECK (expr) — raw SQL expression
 
 GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
-  internal/core/domain/product.go          struct + Validate() — fields patched via markers
-  internal/core/ports/product.go           repository interface — written once, never touched
-  internal/core/services/product_service_gen.go  CRUD delegation — always regenerated
-  internal/core/services/product_service.go      your business logic — never overwritten
-  internal/adapters/store/product_store_gen.go   generated queries — always regenerated
-  internal/adapters/store/product_store.go       your custom queries — never overwritten
-  internal/app/registry.go                 wiring — always regenerated
-  internal/adapters/store/migrations/      numbered SQL migration file
 
-REST ROUTES REGISTERED
-  GET    /api/products
-  GET    /api/products/{id}
-  POST   /api/products
-  PUT    /api/products/{id}
-  DELETE /api/products/{id}
+  Always (all modes):
+    internal/core/domain/product.go               struct + Validate() — fields patched via markers
+    internal/core/ports/product.go                interfaces — written once
+    internal/core/services/product_service_gen.go CRUD delegation — always regenerated
+    internal/core/services/product_service.go     your business logic — never overwritten
+    internal/adapters/store/product_store_gen.go  generated SQL — always regenerated
+    internal/adapters/store/product_store.go      your custom queries — never overwritten
+    internal/app/registry.go                      dependency wiring — always regenerated
+    internal/app/app.go                           route block updated
+    internal/adapters/store/migrations/           numbered SQL migration file
+
+  SSR mode only:
+    internal/adapters/http/product_handler_gen.go SSR handler + typed bindForm — always regenerated
+    internal/adapters/http/product_handler.go     your extensions — never overwritten
+    web/templates/products/list.html              table with HTMX delete — regenerated on field changes
+    web/templates/products/form.html              create/edit form — regenerated on field changes
+    web/templates/products/show.html              detail page — regenerated on field changes
+
+  gRPC mode only:
+    api/proto/v1/product.proto                    protobuf definition — always regenerated
+    internal/adapters/grpc/product_handler_gen.go gRPC handler — always regenerated
+    internal/adapters/grpc/shared.go              error translation — written once
+
+ROUTES MOUNTED IN app.go
+
+  REST:  r.Route("/api/products", …)   → GET / GET/{id} / POST / PUT/{id} / DELETE/{id}
+  SSR:   r.Mount("/products", …)       → GET / GET/new / GET/{id} / GET/{id}/edit /
+                                          POST / POST/{id} / DELETE/{id}
+  gRPC:  REST routes + gRPC ProductService on :50051 (after make proto)
 
 EXAMPLES
   # Basic model
@@ -142,6 +158,9 @@ func runGen(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Add the model to the manifest before scaffolding so writeRegistry sees it.
+	manifest.Models[modelName] = model.ManifestEntry()
+
 	g := generator.New(root, modulePath, manifest, dryRun)
 	result, err := g.Scaffold(model)
 	if err != nil {
@@ -149,7 +168,6 @@ func runGen(cmd *cobra.Command, args []string) error {
 	}
 
 	if !dryRun {
-		manifest.Models[modelName] = model.ManifestEntry()
 		if err := parser.SaveManifest(root, manifest); err != nil {
 			return err
 		}

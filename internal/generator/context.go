@@ -16,6 +16,8 @@ type templateField struct {
 	NotNull      bool
 	IsJSON       bool
 	IsTime       bool
+	IsPointer    bool   // true when GoType starts with "*"
+	ProtoType    string // e.g. "string", "optional int32", "google.protobuf.Timestamp"
 	HasIndex     bool
 	Mods         []string
 	SQLModifiers string
@@ -63,6 +65,36 @@ type registryModel struct {
 type registryCtx struct {
 	ModulePath string
 	Models     []registryModel
+	GRPC       bool
+	IsSSR      bool
+}
+
+// ssrHandlerCtx is the data passed to ssrHandlerTmpl.
+type ssrHandlerCtx struct {
+	ModulePath   string
+	Name         string
+	Lower        string
+	Plural       string
+	Fields       []templateField
+	NeedsStrconv bool // true when any field requires strconv (int/float/bool)
+}
+
+// protoCtx is the data passed to protoTmpl.
+type protoCtx struct {
+	ModulePath   string
+	Name         string
+	Lower        string
+	Fields       []templateField
+	CreatedAtIdx int
+	UpdatedAtIdx int
+}
+
+// grpcHandlerCtx is the data passed to grpcHandlerTmpl.
+type grpcHandlerCtx struct {
+	ModulePath string
+	Name       string
+	Lower      string
+	Fields     []templateField
 }
 
 // migrationCtx is shared by migration templates.
@@ -84,6 +116,7 @@ func buildTemplateFields(fields []parser.Field, db string) []templateField {
 			sqlType = pgSQLType(f)
 		}
 
+		isPointer := strings.HasPrefix(f.GoType, "*")
 		out[i] = templateField{
 			Name:         f.Name,
 			GoName:       toPascalCase(f.Name),
@@ -92,12 +125,46 @@ func buildTemplateFields(fields []parser.Field, db string) []templateField {
 			NotNull:      f.NotNull,
 			IsJSON:       strings.Contains(f.GoType, "RawMessage"),
 			IsTime:       strings.Contains(f.GoType, "time.Time"),
+			IsPointer:    isPointer,
+			ProtoType:    protoType(f.GoType),
 			HasIndex:     hasIndexModifier(f.Modifiers),
 			Mods:         f.Modifiers,
 			SQLModifiers: buildSQLModifiers(f.Modifiers, db),
 		}
 	}
 	return out
+}
+
+// protoType maps a Go type string to the corresponding proto3 type declaration.
+func protoType(goType string) string {
+	switch goType {
+	case "string":
+		return "string"
+	case "*string":
+		return "optional string"
+	case "int":
+		return "int32"
+	case "*int":
+		return "optional int32"
+	case "int64":
+		return "int64"
+	case "*int64":
+		return "optional int64"
+	case "float64":
+		return "double"
+	case "*float64":
+		return "optional double"
+	case "bool":
+		return "bool"
+	case "*bool":
+		return "optional bool"
+	case "time.Time", "*time.Time":
+		return "google.protobuf.Timestamp"
+	case "json.RawMessage":
+		return "bytes"
+	default:
+		return "string"
+	}
 }
 
 // pgSQLType translates SQLite SQL types to native Postgres types.

@@ -12,20 +12,36 @@ import (
 var destroyCmd = &cobra.Command{
 	Use:   "destroy <Model>",
 	Short: "Remove all scaffold files for a model",
-	Long: `Remove all generated scaffold files for a model and create a DROP TABLE migration.
+	Long: `Remove all scaffold files for a model and create a DROP TABLE migration.
 
-Deletes: domain file, ports file, generated service, generated store, user store stub,
-user service stub, and adds the model to the registry. A DROP TABLE migration is
-written so the schema stays in sync.
+Deletes all files for the model — generated and user-owned — and removes it from the
+registry and manifest. A DROP TABLE migration is written so the schema stays in sync.
+Routes are removed from app.go automatically.
 
-WARNING: custom logic in {model}_service.go and {model}_store.go will be lost.
+FILES DELETED
+  Always (all modes):
+    internal/core/domain/{model}.go
+    internal/core/ports/{model}.go
+    internal/core/services/{model}_service_gen.go
+    internal/core/services/{model}_service.go    ← contains your custom logic
+    internal/adapters/store/{model}_store_gen.go
+    internal/adapters/store/{model}_store.go     ← contains your custom queries
+
+  SSR mode:
+    internal/adapters/http/{model}_handler_gen.go
+    web/templates/{plural}/                      ← entire template directory
+
+  gRPC mode:
+    api/proto/v1/{model}.proto
+    internal/adapters/grpc/{model}_handler_gen.go
+
+WARNING: {model}_service.go and {model}_store.go contain your hand-written logic.
+Back them up before running destroy if you want to keep them.
+
 You will be prompted to confirm before anything is deleted.
 
 EXAMPLES
-  # Remove the Product model (prompts for confirmation)
   scaffold destroy Product
-
-  # Remove the Order model
   scaffold destroy Order`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDestroy,

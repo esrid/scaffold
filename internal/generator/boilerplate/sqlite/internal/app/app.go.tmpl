@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	httpAdapter "{{.Module}}/internal/adapters/http"
@@ -17,6 +18,12 @@ import (
 	"{{.Module}}/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	{{- if .GRPC}}
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
+	{{- end}}
 )
 
 type App struct {
@@ -25,6 +32,9 @@ type App struct {
 	logger     *slog.Logger
 	registry   *Registry
 	fileSystem http.FileSystem
+	{{- if .GRPC}}
+	grpcServer *grpc.Server
+	{{- end}}
 }
 
 func NewApp(ctx context.Context, cfg Config) (*App, error) {
@@ -50,6 +60,26 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	{{- if .GRPC}}
+	grpcLn, err := net.Listen("tcp", a.cfg.GRPCAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen for gRPC on %s: %w", a.cfg.GRPCAddr, err)
+	}
+	a.grpcServer = grpc.NewServer()
+	healthSrv := health.NewServer()
+	healthpb.RegisterHealthServer(a.grpcServer, healthSrv)
+	// scaffold: register grpc handlers here
+	if a.cfg.Env != "production" {
+		reflection.Register(a.grpcServer)
+	}
+	a.logger.Info("gRPC Server listening", "addr", a.cfg.GRPCAddr)
+	go func() {
+		if err := a.grpcServer.Serve(grpcLn); err != nil {
+			a.logger.Error("gRPC server crashed", "err", err)
+		}
+	}()
+	{{- end}}
+
 	ln, err := net.Listen("tcp", a.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", a.cfg.Addr, err)
@@ -99,7 +129,8 @@ func (a *App) mountRoutes(r *chi.Mux) {
 	r.Get("/robots.txt", a.serveFile("robots.txt", "text/plain; charset=utf-8", web.RobotsTXT))
 	r.Get("/sitemap.xml", a.serveFile("sitemap.xml", "application/xml", web.SitemapXML))
 	serveStatic(r, "/static", a.fileSystem)
-	// scaffold: add model routes here
+	// scaffold:routes:start
+	// scaffold:routes:end
 }
 
 func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +175,17 @@ func (a *App) serveFile(name, contentType string, prodBytes []byte) http.Handler
 
 func (a *App) shutdown(srv *http.Server) error {
 	a.logger.Info("shutting down gracefully...")
+	{{- if .GRPC}}
+	if a.grpcServer != nil {
+		stopped := make(chan struct{})
+		go func() { a.grpcServer.GracefulStop(); close(stopped) }()
+		select {
+		case <-stopped:
+		case <-time.After(15 * time.Second):
+			a.grpcServer.Stop()
+		}
+	}
+	{{- end}}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {

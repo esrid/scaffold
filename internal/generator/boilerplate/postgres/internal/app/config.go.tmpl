@@ -10,6 +10,9 @@ type Config struct {
 	DatabaseURL string
 	SecretKey   string
 	Addr        string
+	{{- if .GRPC}}
+	GRPCAddr    string
+	{{- end}}
 	BaseURL     string
 	LogLevel    string
 	Env         string
@@ -20,6 +23,9 @@ func LoadConfig() (Config, error) {
 		DatabaseURL: env("DATABASE_URL", "postgres://localhost/{{.AppName}}?sslmode=disable"),
 		SecretKey:   os.Getenv("SECRET_KEY"),
 		Addr:        env("ADDR", ":8080"),
+		{{- if .GRPC}}
+		GRPCAddr:    env("GRPC_ADDR", ":50051"),
+		{{- end}}
 		BaseURL:     env("BASE_URL", "http://localhost:8080"),
 		LogLevel:    env("LOG_LEVEL", "info"),
 		Env:         env("APP_ENV", "development"),

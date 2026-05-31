@@ -96,6 +96,12 @@ func (m *Model) Lower() string {
 	return strings.ToLower(m.Name)
 }
 
+// Plural returns the plural lowercase name (e.g. "Product" → "products").
+// It matches the table name used in the database.
+func (m *Model) Plural() string {
+	return m.TableName
+}
+
 // Receiver returns a one-letter Go receiver (e.g. "Product" → "p").
 func (m *Model) Receiver() string {
 	return strings.ToLower(string(m.Name[0]))

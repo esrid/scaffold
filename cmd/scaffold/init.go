@@ -15,8 +15,10 @@ import (
 )
 
 var (
-	initModule string
-	initDB     string
+	initModule  string
+	initDB      string
+	initGRPC    bool   // legacy alias for --api grpc
+	initAPIMode string // "ssr" | "rest" | "grpc"
 )
 
 var initCmd = &cobra.Command{
@@ -44,25 +46,38 @@ GENERATED PROJECT STRUCTURE
       │   └── services/            service stubs (one gen + one user file per model)
       └── adapters/
           ├── http/
-          │   ├── crud_handler.go  generic Chi CRUD handler (all models share it)
+          │   ├── crud_handler.go  generic Chi CRUD handler (REST) or per-model handler (SSR)
           │   └── middleware.go
           └── store/
               ├── schema.sql       full schema
               ├── migrations/      numbered SQL migration files
               └── {model}_store*.go  generated + user store files
 
-MAKEFILE TARGETS
+API MODES
+  --api ssr   (default) html/template + HTMX server-side rendering
+  --api rest  JSON API with generic CRUDHandler[T]
+  --api grpc  gRPC server (REST + gRPC hybrid)
+
+MAKEFILE TARGETS (REST/gRPC mode)
   make run       build frontend + run server (go run) on :8080
   make build     build frontend + compile binary to bin/server
   make build-fe  esbuild TypeScript + CSS only
   make clean     remove web/dist and bin/
 
-EXAMPLES
-  # Create ./myapp with a Postgres database
-  scaffold init myapp --module github.com/yourname/myapp --db postgres
+MAKEFILE TARGETS (SSR mode)
+  make run       run server (go run) on :8080
+  make build     compile binary to bin/server
+  make clean     remove bin/
 
-  # Create ./myapp with SQLite (no external database needed)
+EXAMPLES
+  # Create ./myapp with SSR mode (default) and SQLite
   scaffold init myapp --module github.com/yourname/myapp --db sqlite
+
+  # Create ./myapp with REST API and Postgres
+  scaffold init myapp --module github.com/yourname/myapp --db postgres --api rest
+
+  # Create ./myapp with gRPC support
+  scaffold init myapp --module github.com/yourname/myapp --db sqlite --api grpc
 
   # Directory defaults to the last segment of --module when omitted
   scaffold init --module github.com/yourname/myapp --db postgres
@@ -82,6 +97,8 @@ NEXT STEPS after init
 func init() {
 	initCmd.Flags().StringVar(&initModule, "module", "", "Go module path (e.g. github.com/user/myapp)")
 	initCmd.Flags().StringVar(&initDB, "db", "", "Database driver: sqlite or postgres")
+	initCmd.Flags().StringVar(&initAPIMode, "api", "ssr", "API mode: ssr (html/template+HTMX), rest (JSON API), or grpc")
+	initCmd.Flags().BoolVar(&initGRPC, "grpc", false, "Enable gRPC support — alias for --api grpc (deprecated)")
 	_ = initCmd.MarkFlagRequired("module")
 	rootCmd.AddCommand(initCmd)
 }
@@ -95,7 +112,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		parts := strings.Split(initModule, "/")
 		dir = parts[len(parts)-1]
 	}
-	dir, err := filepath.Abs(dir)
+	var err error
+	dir, err = filepath.Abs(dir)
 	if err != nil {
 		return fmt.Errorf("init: resolve dir: %w", err)
 	}
@@ -112,20 +130,29 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --db %q: must be sqlite or postgres", db)
 	}
 
+	// Resolve API mode — --grpc flag takes precedence over --api
+	apiMode := strings.ToLower(strings.TrimSpace(initAPIMode))
+	if initGRPC {
+		apiMode = "grpc"
+	}
+	if apiMode != "ssr" && apiMode != "rest" && apiMode != "grpc" {
+		return fmt.Errorf("invalid --api %q: must be ssr, rest, or grpc", apiMode)
+	}
+
 	// Create target directory
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("init: mkdir: %w", err)
 	}
 
-	fmt.Printf("Initializing %s project in %s...\n", db, dir)
+	fmt.Printf("Initializing %s/%s project in %s...\n", db, apiMode, dir)
 
 	// Generate boilerplate files
-	if err := boilerplate.Generate(dir, initModule, db); err != nil {
+	if err := boilerplate.Generate(dir, initModule, db, apiMode); err != nil {
 		return fmt.Errorf("init: generate: %w", err)
 	}
 
 	// Write .scaffold/models.json
-	if err := writeInitManifest(dir, initModule, db); err != nil {
+	if err := writeInitManifest(dir, initModule, db, apiMode); err != nil {
 		return fmt.Errorf("init: manifest: %w", err)
 	}
 
@@ -162,11 +189,13 @@ func promptDB() (string, error) {
 	return v, nil
 }
 
-func writeInitManifest(dir, module, db string) error {
+func writeInitManifest(dir, module, db, apiMode string) error {
 	m := parser.Manifest{
-		Module: module,
-		DB:     db,
-		Models: map[string]parser.ManifestModel{},
+		Module:  module,
+		DB:      db,
+		GRPC:    apiMode == "grpc",
+		APIMode: apiMode,
+		Models:  map[string]parser.ManifestModel{},
 	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

@@ -8,4 +8,8 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/samber/oops v1.22.0
+	{{- if .GRPC}}
+	google.golang.org/grpc v1.65.0
+	google.golang.org/protobuf v1.34.2
+	{{- end}}
 )

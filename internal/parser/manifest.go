@@ -12,13 +12,24 @@ const manifestPath = ".scaffold/models.json"
 
 // Manifest is the source of truth for all scaffolded models.
 type Manifest struct {
-	Module string                   `json:"module"`
-	DB     string                   `json:"db"` // "sqlite" | "postgres", default "sqlite"
-	Models map[string]ManifestModel `json:"models"`
+	Module  string                   `json:"module"`
+	DB      string                   `json:"db"`       // "sqlite" | "postgres", default "sqlite"
+	GRPC    bool                     `json:"grpc"`     // true if gRPC support is enabled (legacy flag)
+	APIMode string                   `json:"api_mode"` // "rest" | "ssr" | "grpc"
+	Models  map[string]ManifestModel `json:"models"`
 }
 
 // IsPostgres reports whether the project uses Postgres. Empty DB defaults to sqlite.
 func (m *Manifest) IsPostgres() bool { return m.DB == "postgres" }
+
+// IsGRPC reports whether gRPC support is enabled for this project.
+func (m *Manifest) IsGRPC() bool { return m.APIMode == "grpc" || m.GRPC }
+
+// IsSSR reports whether the project uses SSR (html/template + HTMX) mode.
+func (m *Manifest) IsSSR() bool { return m.APIMode == "ssr" }
+
+// IsREST reports whether the project uses REST (JSON API) mode.
+func (m *Manifest) IsREST() bool { return m.APIMode == "rest" || (m.APIMode == "" && !m.GRPC) }
 
 // ManifestModel stores the field snapshot and metadata for a model.
 type ManifestModel struct {

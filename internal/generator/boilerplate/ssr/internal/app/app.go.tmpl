@@ -1,10 +1,10 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -17,7 +17,11 @@ import (
 	"{{.Module}}/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	{{- if eq .DB "postgres"}}
 	"github.com/jackc/pgx/v5/pgxpool"
+	{{- else}}
+	"database/sql"
+	{{- end}}
 	{{- if .GRPC}}
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -27,11 +31,15 @@ import (
 )
 
 type App struct {
-	cfg        Config
-	pool       *pgxpool.Pool
-	logger     *slog.Logger
-	registry   *Registry
-	fileSystem http.FileSystem
+	cfg      Config
+	{{- if eq .DB "postgres"}}
+	pool     *pgxpool.Pool
+	{{- else}}
+	db       *sql.DB
+	{{- end}}
+	logger   *slog.Logger
+	registry *Registry
+	tmpl     *template.Template
 	{{- if .GRPC}}
 	grpcServer *grpc.Server
 	{{- end}}
@@ -40,25 +48,39 @@ type App struct {
 func NewApp(ctx context.Context, cfg Config) (*App, error) {
 	logger := buildLogger(cfg.LogLevel, cfg.Env)
 
+	{{- if eq .DB "postgres"}}
 	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
 	pool, err := store.Open(connCtx, cfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
-
-	fileSystem, err := buildStaticFS(cfg.Env)
+	{{- else}}
+	db, err := store.Open(cfg.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}
+	{{- end}}
+
+	tmpl, err := loadTemplates(cfg.Env)
+	if err != nil {
+		return nil, fmt.Errorf("load templates: %w", err)
+	}
 
 	return &App{
-		cfg:        cfg,
-		pool:       pool,
-		logger:     logger,
-		registry:   NewRegistry(pool, logger),
-		fileSystem: fileSystem,
+		cfg:    cfg,
+		{{- if eq .DB "postgres"}}
+		pool:   pool,
+		{{- else}}
+		db:     db,
+		{{- end}}
+		logger:   logger,
+		tmpl:     tmpl,
+		{{- if eq .DB "postgres"}}
+		registry: NewRegistry(pool, logger, tmpl),
+		{{- else}}
+		registry: NewRegistry(db, logger, tmpl),
+		{{- end}}
 	}, nil
 }
 
@@ -128,17 +150,24 @@ func (a *App) mountMiddlewares(r *chi.Mux) {
 
 func (a *App) mountRoutes(r *chi.Mux) {
 	r.Get("/health", a.healthHandler)
-	r.Get("/", a.serveFile("index.html", "text/html; charset=utf-8", web.IndexHTML))
-	r.Get("/robots.txt", a.serveFile("robots.txt", "text/plain; charset=utf-8", web.RobotsTXT))
-	r.Get("/sitemap.xml", a.serveFile("sitemap.xml", "application/xml", web.SitemapXML))
-	serveStatic(r, "/static", a.fileSystem)
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := a.tmpl.ExecuteTemplate(w, "home.html", map[string]any{"Title": "Home"}); err != nil {
+			a.logger.Error("render home", "err", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+	})
 	// scaffold:routes:start
 	// scaffold:routes:end
 }
 
 func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	{{- if eq .DB "postgres"}}
 	if err := a.pool.Ping(r.Context()); err != nil {
+	{{- else}}
+	if err := a.db.PingContext(r.Context()); err != nil {
+	{{- end}}
 		a.logger.Error("database health check failed", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"status":"unhealthy","database":"disconnected"}`))
@@ -146,34 +175,6 @@ func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"healthy","database":"connected"}`))
-}
-
-var buildTime = time.Now()
-
-func (a *App) serveFile(name, contentType string, prodBytes []byte) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", contentType)
-		if a.cfg.Env == "production" {
-			http.ServeContent(w, r, name, buildTime, bytes.NewReader(prodBytes))
-			return
-		}
-		file, err := a.fileSystem.Open(name)
-		if err != nil {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		defer func() {
-			if err := file.Close(); err != nil {
-				a.logger.Error("close file", "name", name, "err", err)
-			}
-		}()
-		stat, err := file.Stat()
-		if err != nil {
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-		http.ServeContent(w, r, name, stat.ModTime(), file)
-	}
 }
 
 func (a *App) shutdown(srv *http.Server) error {
@@ -194,7 +195,13 @@ func (a *App) shutdown(srv *http.Server) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		a.logger.Error("failed to shutdown HTTP server", "err", err)
 	}
+	{{- if eq .DB "postgres"}}
 	a.pool.Close()
+	{{- else}}
+	if err := a.db.Close(); err != nil {
+		a.logger.Error("failed to close database connection", "err", err)
+	}
+	{{- end}}
 	a.logger.Info("shutdown complete. Goodbye!")
 	return nil
 }
@@ -223,13 +230,32 @@ func buildLogger(logLevel, env string) *slog.Logger {
 	return logger
 }
 
-func buildStaticFS(env string) (http.FileSystem, error) {
+func loadTemplates(env string) (*template.Template, error) {
+	var fsys fs.FS
+	var err error
 	if env == "production" {
-		subFS, err := fs.Sub(web.Assets, "dist")
+		fsys, err = fs.Sub(web.TemplatesFS, "templates")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("templates sub fs: %w", err)
 		}
-		return http.FS(subFS), nil
+	} else {
+		fsys = os.DirFS("web/templates")
 	}
-	return http.Dir("web/dist"), nil
+
+	tmpl := template.New("")
+
+	// Parse root-level templates (layout, home, etc.)
+	if tmpl, err = tmpl.ParseFS(fsys, "*.html"); err != nil {
+		return nil, fmt.Errorf("parse root templates: %w", err)
+	}
+
+	// Parse model sub-templates (products/list.html, etc.) — optional, may not exist yet.
+	subFiles, _ := fs.Glob(fsys, "*/*.html")
+	if len(subFiles) > 0 {
+		if tmpl, err = tmpl.ParseFS(fsys, "*/*.html"); err != nil {
+			return nil, fmt.Errorf("parse model templates: %w", err)
+		}
+	}
+
+	return tmpl, nil
 }

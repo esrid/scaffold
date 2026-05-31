@@ -1,11 +1,12 @@
 # scaffold
 
-A CLI that bootstraps production-ready Go REST APIs with a hexagonal architecture, then lets you add, modify, and remove models without touching boilerplate.
+A CLI that bootstraps production-ready Go apps with hexagonal architecture. Choose your API mode — **SSR** (html/template + HTMX, default), **REST** (JSON API), or **gRPC** — then add, update, and remove models without touching boilerplate.
 
 ## Prerequisites
 
-- Go 1.23+
+- Go 1.24+
 - PostgreSQL (if using `--db postgres`)
+- [`buf`](https://buf.build/docs/installation) (if using `--api grpc`, for proto code generation)
 
 ## Installation
 
@@ -24,18 +25,25 @@ go build -o scaffold .
 ## Quick start
 
 ```bash
-# 1. Bootstrap a new project
-scaffold init myapp --module github.com/yourname/myapp --db sqlite
+# SSR project (default — html/template + HTMX + Tailwind)
+scaffold init myapp --module github.com/you/myapp --db sqlite
+cd myapp && make run
 
-# 2. Enter the project and start the server
-cd myapp
-make run
+scaffold gen Product name:string! price:float! description:string
+# → generates CRUD pages at /products (list, show, create, edit)
 
-# 3. Generate your first model
-scaffold gen Product name:string! price:float! sku:string{unique}
+# REST JSON API
+scaffold init myapp --module github.com/you/myapp --db sqlite --api rest
+scaffold gen Product name:string! price:float!
+# → generates JSON CRUD at /api/products
+
+# gRPC + REST dual-stack
+scaffold init myapp --module github.com/you/myapp --db postgres --api grpc
+scaffold gen Order status:string! total:float!
+# → generates proto + gRPC handler + REST JSON routes
 ```
 
-The server is running on `:8080`. You now have a full CRUD REST API for `Product` with zero boilerplate to write.
+---
 
 ## Commands
 
@@ -44,47 +52,38 @@ The server is running on `:8080`. You now have a full CRUD REST API for `Product
 Bootstrap a complete project from the built-in boilerplate.
 
 ```
-scaffold init [dir] --module <module-path> [--db sqlite|postgres]
+scaffold init [dir] --module <path> [--db sqlite|postgres] [--api ssr|rest|grpc]
 ```
 
-| Flag | Description |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--module` | — | Go module path **(required)** |
+| `--db` | prompted | `sqlite` or `postgres` |
+| `--api` | `ssr` | API mode: `ssr`, `rest`, or `grpc` |
+
+`dir` defaults to the last segment of `--module`. Runs `go mod tidy` automatically.
+
+| Mode | What you get |
 |------|-------------|
-| `--module` | Go module path, e.g. `github.com/you/myapp` **(required)** |
-| `--db` | Database driver: `sqlite` or `postgres` (prompted if omitted) |
-
-If `dir` is omitted, it defaults to the last segment of `--module`.
-
-```bash
-# Postgres project in ./myapp
-scaffold init myapp --module github.com/you/myapp --db postgres
-
-# SQLite project, dir inferred from module
-scaffold init --module github.com/you/myapp --db sqlite
-# → creates ./myapp/
-```
-
-`init` runs `go mod tidy` automatically. When it finishes:
-
-```
-cd myapp
-make run   # dev server on :8080
-```
+| `ssr` | html/template pages, HTMX, Tailwind CDN, per-model HTML templates |
+| `rest` | JSON CRUD API, generic `CRUDHandler[T]`, TypeScript/esbuild frontend scaffold |
+| `grpc` | REST + gRPC dual-stack, health check, per-model `.proto` + handler |
 
 ---
 
 ### `scaffold gen`
 
-Generate or update the full CRUD scaffold for a model.
+Generate or update the full CRUD scaffold for a model. Routes are mounted automatically in `app.go`.
 
 ```
 scaffold gen <Model> [field:type{modifier}!...] [--dry-run] [--table-name <name>]
 ```
 
-Running `gen` again on an existing model **adds or removes fields** and writes a diff migration — your hand-written service and store code is never overwritten.
+Running `gen` again on an existing model **adds or removes fields** and writes a diff migration. Your hand-written files are never overwritten.
 
 | Flag | Description |
 |------|-------------|
-| `--dry-run` | Preview what would be written without touching the filesystem |
+| `--dry-run` | Preview changes without writing files |
 | `--table-name` | Override the auto-pluralized table name (e.g. `people` for `Person`) |
 
 #### Field syntax
@@ -96,14 +95,14 @@ name:type{mod}         field with modifier
 name:type{mod,mod}!    multiple modifiers, NOT NULL
 ```
 
-The `!` suffix and the `nn` modifier are equivalent — use whichever reads better.
+`!` and `nn` are equivalent.
 
 #### Types
 
-| Alias | Go type | SQLite type | Postgres type |
-|-------|---------|-------------|---------------|
+| Alias | Go type | SQLite | Postgres |
+|-------|---------|--------|----------|
 | `string`, `text` | `string` | `TEXT` | `TEXT` |
-| `string`, `text` + size | `string` | `VARCHAR(n)` | `VARCHAR(n)` |
+| `string{n}` | `string` | `VARCHAR(n)` | `VARCHAR(n)` |
 | `int` | `int` | `INTEGER` | `INTEGER` |
 | `int64` | `int64` | `INTEGER` | `BIGINT` |
 | `float`, `float64` | `float64` | `REAL` | `DOUBLE PRECISION` |
@@ -111,63 +110,33 @@ The `!` suffix and the `nn` modifier are equivalent — use whichever reads bett
 | `time`, `datetime` | `time.Time` | `DATETIME` | `TIMESTAMPTZ` |
 | `json` | `json.RawMessage` | `TEXT` | `JSONB` |
 
-`id`, `created_at`, and `updated_at` are auto-managed — do not declare them.
+`id`, `created_at`, `updated_at` are auto-managed — do not declare them.
 
 #### Modifiers
 
-Modifiers go inside `{…}`, comma-separated. They can be freely combined.
-
-| Modifier | Applies to | SQL emitted | Notes |
-|----------|-----------|-------------|-------|
-| `nn` | any | `NOT NULL` | alias for `!` suffix |
-| `unique` | any | `UNIQUE` | |
-| `index` | any | separate `CREATE INDEX` | |
-| `<n>` (number) | `string`, `text` | `VARCHAR(n)` | e.g. `{92}` |
-| `default=val` | any | `DEFAULT 'val'` | string-quoted |
-| `fk=table` | any | `REFERENCES table(id)` | SQLite: no ON DELETE clause by default; Postgres: `ON DELETE RESTRICT` |
-| `fk=table` + `cascade` | any | `REFERENCES table(id) ON DELETE CASCADE` | both DBs |
-| `fk=table` + `setnull` | any | `REFERENCES table(id) ON DELETE SET NULL` | both DBs |
-| `check=expr` | any | `CHECK (expr)` | raw SQL expression |
-
-`cascade` and `setnull` require `fk=` and are mutually exclusive.
+| Modifier | SQL emitted |
+|----------|-------------|
+| `nn` | `NOT NULL` — alias for `!` |
+| `unique` | `UNIQUE` |
+| `index` | separate `CREATE INDEX` |
+| `<n>` | `VARCHAR(n)` (string/text only) |
+| `default=val` | `DEFAULT 'val'` |
+| `fk=table` | `REFERENCES table(id)` |
+| `fk=table,cascade` | `… ON DELETE CASCADE` |
+| `fk=table,setnull` | `… ON DELETE SET NULL` |
+| `check=expr` | `CHECK (expr)` |
 
 #### Examples
 
 ```bash
-# Basic model
 scaffold gen Product name:string! price:float! sku:string{unique}
-
-# Nullable field (no !) → Go pointer *string
 scaffold gen Article title:string! body:string views:int
-
-# NOT NULL via nn modifier (equivalent to !)
-scaffold gen Order status:string{nn,default=pending}
-
-# VARCHAR(n) — fixed-length string column
+scaffold gen Order status:string{default=pending,nn}
 scaffold gen User username:string{92}! email:string{255,unique}!
-
-# CHECK constraint
-scaffold gen Product price:float{check=price>0}! stock:int{check=stock>=0}
-
-# Foreign key with cascade delete
-scaffold gen Post user_id:string{fk=users,cascade}! title:string!
-
-# Foreign key with set-null on delete
-scaffold gen Comment author_id:string{fk=users,setnull} body:string!
-
-# Combine: FK + cascade + index
 scaffold gen Post user_id:string{fk=users,cascade,index}! title:string!
-
-# JSON field
 scaffold gen Event payload:json! metadata:json
-
-# Add a field to an existing model (generates ALTER TABLE migration)
-scaffold gen Product name:string! price:float! sku:string{unique} stock:int
-
-# Preview without writing
+scaffold gen Product name:string! price:float! stock:int   # add stock to existing model
 scaffold gen Product name:string! price:float! --dry-run
-
-# Custom table name
 scaffold gen Person name:string! --table-name people
 ```
 
@@ -181,94 +150,113 @@ Remove all scaffold files for a model and create a `DROP TABLE` migration.
 scaffold destroy <Model>
 ```
 
-Prompts for confirmation before deleting anything. Hand-written files (`{model}_service.go`, `{model}_store.go`) are deleted along with generated ones — back them up first if they contain custom logic.
-
-```bash
-scaffold destroy Product
-```
+Prompts for confirmation. Deletes generated AND hand-written files for the model — back up custom logic first.
 
 ---
 
 ## Generated project structure
 
+### SSR mode (default)
+
 ```
 myapp/
 ├── main.go
-├── Makefile
+├── Makefile                           # make run / make build
 ├── .env.example
-├── .scaffold/
-│   └── models.json              # manifest tracking all models
+├── .scaffold/models.json              # manifest
 └── internal/
     ├── app/
-    │   ├── app.go               # wires everything together
-    │   ├── config.go            # env-based config
-    │   └── registry.go          # auto-regenerated on every gen/destroy
+    │   ├── app.go                     # loads templates, mounts routes
+    │   ├── config.go
+    │   └── registry.go                # auto-regenerated
     ├── core/
-    │   ├── domain/
-    │   │   ├── errors.go        # NotFoundError, ValidationError, etc.
-    │   │   └── {model}.go       # struct + Validate() + marker blocks
-    │   ├── ports/
-    │   │   └── {model}.go       # repository interface (written once)
+    │   ├── domain/{model}.go          # struct + Validate()
+    │   ├── ports/{model}.go           # interfaces
     │   └── services/
-    │       ├── {model}_service_gen.go   # CRUD delegation (regenerated)
-    │       └── {model}_service.go       # your custom logic (never touched)
+    │       ├── {model}_service_gen.go # CRUD delegation (regenerated)
+    │       └── {model}_service.go     # your logic (never touched)
     └── adapters/
         ├── http/
-        │   ├── crud_handler.go  # generic Chi CRUD handler
+        │   ├── {model}_handler_gen.go # SSR handler + bindForm (regenerated)
+        │   ├── {model}_handler.go     # your extensions (never touched)
         │   └── middleware.go
         └── store/
-            ├── schema.sql                     # full schema
-            ├── migrations/                    # numbered SQL migrations
-            ├── {model}_store_gen.go           # generated queries (regenerated)
-            └── {model}_store.go               # your custom queries (never touched)
+            ├── {model}_store_gen.go
+            └── {model}_store.go
+web/
+├── templates/
+│   ├── layout.html                    # header/footer partials
+│   ├── home.html
+│   └── {plural}/
+│       ├── list.html                  # table with HTMX delete (regenerated)
+│       ├── form.html                  # create/edit form (regenerated)
+│       └── show.html                  # detail page (regenerated)
+└── templates.go                       # //go:embed for production
 ```
 
-### What gets regenerated vs. what's yours
+### REST mode
+
+Same as SSR, except:
+- `internal/adapters/http/crud_handler.go` — generic `CRUDHandler[T]` (no per-model handler)
+- `web/src/` + `web/dist/` — TypeScript/esbuild frontend scaffold instead of templates
+- Routes: `GET /api/{plural}`, `POST /api/{plural}`, `PUT /api/{plural}/{id}`, etc.
+
+### gRPC mode (REST + gRPC)
+
+Adds on top of REST:
+- `api/proto/v1/{model}.proto`
+- `internal/adapters/grpc/{model}_handler_gen.go`
+- `internal/adapters/grpc/shared.go` — error translation (written once)
+- `buf.yaml` + `buf.gen.yaml` — proto code generation config
+
+Run `make proto` after `scaffold gen` to compile `.proto` → Go pb package.
+
+---
+
+## What's regenerated vs. what's yours
 
 | File | Behaviour |
 |------|-----------|
-| `domain/{model}.go` | Struct fields patched via markers; `Validate()` body is yours |
-| `ports/{model}.go` | Written once, never touched again |
+| `domain/{model}.go` | Struct fields patched via markers; `Validate()` is yours |
+| `ports/{model}.go` | Written once, never touched |
 | `services/{model}_service_gen.go` | Always regenerated |
 | `services/{model}_service.go` | Yours — never overwritten |
 | `store/{model}_store_gen.go` | Always regenerated |
 | `store/{model}_store.go` | Yours — never overwritten |
 | `app/registry.go` | Always regenerated |
-
----
-
-## REST API
-
-Every model gets five routes registered under `/api/{plural-model}`:
-
-| Method | Path | Action |
-|--------|------|--------|
-| `GET` | `/api/products` | List (limit 10) |
-| `GET` | `/api/products/{id}` | Get by ID |
-| `POST` | `/api/products` | Create |
-| `PUT` | `/api/products/{id}` | Update |
-| `DELETE` | `/api/products/{id}` | Delete |
-
-The handler rejects unknown JSON fields and caps request bodies at 1 MB.
+| `app/app.go` (route block) | Routes section regenerated; rest is yours |
+| `http/{model}_handler_gen.go` | SSR only — always regenerated |
+| `http/{model}_handler.go` | SSR only — yours |
+| `web/templates/{plural}/*.html` | Always regenerated on field changes |
+| `adapters/grpc/{model}_handler_gen.go` | gRPC only — always regenerated |
+| `adapters/grpc/shared.go` | gRPC only — written once |
+| `api/proto/v1/{model}.proto` | gRPC only — always regenerated |
 
 ---
 
 ## Makefile targets
 
+**SSR and gRPC modes:**
 ```bash
-make run       # build frontend + run server (go run)
-make build     # build frontend + compile binary to bin/server
+make run     # go run main.go
+make build   # go build -o bin/server
+make proto   # buf generate api/proto/v1  (gRPC only)
+```
+
+**REST mode:**
+```bash
+make run     # build TypeScript + go run
+make build   # build TypeScript + go build
 make build-fe  # esbuild TypeScript + CSS only
-make clean     # remove web/dist and bin/
+make proto   # buf generate api/proto/v1  (gRPC only)
 ```
 
 ---
 
 ## Adding custom logic
 
-After `scaffold gen`, open the two stub files that are yours to own:
+**`internal/core/domain/{model}.go`** — field validation:
 
-**`internal/core/domain/{model}.go`** — add field validation:
 ```go
 func (p Product) Validate() error {
     errs := domain.ValidationError{Entity: "Product", Errors: map[string]string{}}
@@ -282,16 +270,41 @@ func (p Product) Validate() error {
 }
 ```
 
-**`internal/adapters/store/{model}_store.go`** — add custom queries below the generated section:
+**`internal/adapters/store/{model}_store.go`** — custom SQL queries:
+
 ```go
 func (s *ProductStore) FindBySKU(ctx context.Context, sku string) (*domain.Product, error) {
     // your query here
 }
 ```
 
-**`internal/core/services/{model}_service.go`** — add business logic:
+**`internal/core/services/{model}_service.go`** — business logic:
+
 ```go
 func (s *ProductService) Publish(ctx context.Context, id string) error {
     // your logic here
 }
+```
+
+**SSR: `internal/adapters/http/{model}_handler.go`** — extra routes:
+
+```go
+func (h *ProductHandler) RegisterExtraRoutes(r chi.Router) {
+    r.Get("/featured", h.Featured)
+}
+```
+
+---
+
+## Running tests
+
+```bash
+# Fast unit tests (no network, no Docker)
+go test ./... -short
+
+# Compilation tests (downloads deps, ~10s)
+go test ./internal/generator/boilerplate/...
+
+# Full integration tests with Postgres container (requires Docker)
+go test ./internal/generator/boilerplate/... -tags integration
 ```
