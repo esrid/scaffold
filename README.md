@@ -4,7 +4,7 @@ A CLI that bootstraps production-ready Go apps with hexagonal architecture. Choo
 
 ## Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - PostgreSQL (if using `--db postgres`)
 - [`buf`](https://buf.build/docs/installation) (if using `--api grpc`, for proto code generation)
 
