@@ -87,33 +87,36 @@ func parseField(arg string) (Field, error) {
 		return Field{}, err
 	}
 
-	// Extract modifiers from {mod,mod}
+	// Extract modifiers. Two accepted forms, both reducing to a list of tokens:
+	//   legacy brace form (needs shell quoting in zsh):  type{mod,mod}
+	//   shell-safe comma form:                           type,mod,mod
 	var modifiers []string
 	if braceStart := strings.Index(rest, "{"); braceStart >= 0 {
 		braceEnd := strings.Index(rest, "}")
 		if braceEnd < 0 {
 			return Field{}, fmt.Errorf("field %q: unclosed modifier brace", name)
 		}
-		modStr := rest[braceStart+1 : braceEnd]
+		modifiers = splitModifiers(rest[braceStart+1 : braceEnd])
 		rest = rest[:braceStart]
-		for _, m := range strings.Split(modStr, ",") {
-			m = strings.TrimSpace(m)
-			if m != "" {
-				modifiers = append(modifiers, m)
-			}
-		}
+	} else if commaIdx := strings.Index(rest, ","); commaIdx >= 0 {
+		modifiers = splitModifiers(rest[commaIdx+1:])
+		rest = rest[:commaIdx]
 	}
 
 	typeName := strings.ToLower(strings.TrimSpace(rest))
 
-	// Detect "[]base" array syntax (e.g. "[]string", "[]int").
+	// Detect arrays via either the "[]base" prefix (legacy; needs quoting in zsh)
+	// or an "array" modifier (shell-safe). Both produce a Go slice type.
 	isArray := strings.HasPrefix(typeName, "[]")
 	if isArray {
 		typeName = strings.TrimSpace(typeName[2:])
-		if !arrayElementTypes[typeName] {
-			return Field{}, fmt.Errorf("type %q cannot be used as an array element for field %q — valid element types: %s",
-				typeName, name, validArrayElementTypes())
-		}
+	}
+	var hasArrayMod bool
+	modifiers, hasArrayMod = extractArrayModifier(modifiers)
+	isArray = isArray || hasArrayMod
+	if isArray && !arrayElementTypes[typeName] {
+		return Field{}, fmt.Errorf("type %q cannot be used as an array element for field %q — valid element types: %s",
+			typeName, name, validArrayElementTypes())
 	}
 
 	types, ok := typeMap[typeName]
@@ -200,6 +203,32 @@ func parseField(arg string) (Field, error) {
 		NotNull:   notNull,
 		Modifiers: modifiers,
 	}, nil
+}
+
+// splitModifiers splits a comma-separated modifier list, trimming blanks.
+func splitModifiers(s string) []string {
+	var mods []string
+	for _, m := range strings.Split(s, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			mods = append(mods, m)
+		}
+	}
+	return mods
+}
+
+// extractArrayModifier removes the "array"/"arr" marker from the modifier list,
+// reporting whether it was present. It is a type-shaping flag, not a DB modifier.
+func extractArrayModifier(mods []string) ([]string, bool) {
+	out := mods[:0]
+	found := false
+	for _, m := range mods {
+		if m == "array" || m == "arr" {
+			found = true
+			continue
+		}
+		out = append(out, m)
+	}
+	return out, found
 }
 
 func validateFieldName(name string) error {

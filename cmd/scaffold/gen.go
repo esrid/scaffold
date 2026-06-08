@@ -29,8 +29,12 @@ Each change writes a diff migration. Routes are mounted automatically in app.go.
 FIELD SYNTAX
   field:type            nullable field (Go pointer, e.g. *string)
   field:type!           NOT NULL field
-  field:type{mod}       field with a modifier
-  field:type{mod,mod}!  multiple modifiers, NOT NULL
+  field:type,mod        field with a modifier
+  field:type,mod,mod!   multiple modifiers, NOT NULL
+
+  Modifiers may be written comma-separated (field:type,mod,mod) OR in braces
+  (field:type{mod,mod}). The comma form needs no shell quoting; the brace form
+  must be quoted in zsh/bash. Both are equivalent.
 
   Do NOT declare id, created_at, or updated_at — they are auto-managed.
 
@@ -44,17 +48,19 @@ TYPES
   time, datetime      DATETIME / TIMESTAMPTZ
   []<type>            array of any scalar type above except time/json
                       (Go slice; native array on postgres, JSON-encoded TEXT on sqlite)
+                      shell-safe equivalent: <type>,array  (e.g. tags:string,array)
 
-MODIFIERS  (go inside {…}, comma-separated)
+MODIFIERS  (comma-separated after the type, or inside {…})
   nn                  NOT NULL — alias for ! suffix
+  array (or arr)      make the field a slice — shell-safe alt to []type
   unique              UNIQUE constraint
   index               separate CREATE INDEX
-  <n>                 VARCHAR(n) for string/text, e.g. {92}
+  <n>                 VARCHAR(n) for string/text, e.g. ,92
   default=val         DEFAULT 'val'
   fk=table            REFERENCES table(id)
   cascade             ON DELETE CASCADE  (requires fk=; mutually exclusive with setnull)
   setnull             ON DELETE SET NULL (requires fk=; mutually exclusive with cascade)
-  check=expr          CHECK (expr) — raw SQL expression
+  check=expr          CHECK (expr) — raw SQL expression (quote in shell: '>' '<' need it)
 
 GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
 
@@ -117,6 +123,9 @@ EXAMPLES
 
   # Array fields (Go []string/[]int; TEXT[] on postgres, JSON TEXT on sqlite)
   scaffold gen Post title:string! tags:[]string! scores:[]int
+
+  # Same thing, shell-safe (no quoting needed in zsh): comma modifiers + ,array
+  scaffold gen Roadmap parent_id:string,fk=roadmaps,index! title:string! resources:string,array
 
   # Add a field to an existing model (kept fields stay; generates ALTER TABLE migration)
   scaffold gen Product stock:int
