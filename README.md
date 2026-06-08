@@ -290,9 +290,16 @@ func (p Product) Validate() error {
 
 **`internal/adapters/store/{model}_store.go`** — custom SQL queries:
 
+For both Postgres (`pgx`) and SQLite (`database/sql` via adapted helpers), you can use struct-mapping helpers like `CollectRows` and `RowToStructByName` to map query results without writing manual scanner code:
+
 ```go
 func (s *ProductStore) FindBySKU(ctx context.Context, sku string) (*domain.Product, error) {
-    // your query here
+	// Example using SQLite adapted helpers:
+	rows, err := s.db.QueryContext(ctx, "SELECT id, name, price, active, created_at, updated_at FROM products WHERE sku = ?", sku)
+	if err != nil {
+		return nil, err
+	}
+	return store.CollectOneRow(rows, store.RowToAddrOfStructByName[domain.Product])
 }
 ```
 
