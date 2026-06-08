@@ -47,7 +47,7 @@ func genModel(t *testing.T, manifest *parser.Manifest, name string, fields ...st
 	if err != nil {
 		t.Fatalf("ParseFields: %v", err)
 	}
-	model, err := parser.BuildModel(name, fs, manifest, "")
+	model, err := parser.BuildModel(name, fs, nil, manifest, "")
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
@@ -321,6 +321,25 @@ func TestScaffold_SSR_Update_RegeneratesTemplates(t *testing.T) {
 	list2 := readFile(t, root, "web/templates/tasks/list.html")
 	assertContains(t, list2, "Priority", "second gen adds priority")
 }
+
+func TestScaffold_NoFields_KeepsExistingFields(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "ssr")
+
+	// First gen
+	model := genModel(t, manifest, "Task", "title:string!")
+	runScaffold(t, root, manifest, model)
+
+	list1 := readFile(t, root, "web/templates/tasks/list.html")
+	assertContains(t, list1, "Title", "first gen has title")
+
+	// Second gen (no fields)
+	model2 := genModel(t, manifest, "Task")
+	runScaffold(t, root, manifest, model2)
+
+	list2 := readFile(t, root, "web/templates/tasks/list.html")
+	assertContains(t, list2, "Title", "second gen with no fields preserves title")
+}
+
 
 // ---- gRPC mode tests ----
 

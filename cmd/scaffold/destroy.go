@@ -29,10 +29,13 @@ FILES DELETED
 
   SSR mode:
     internal/adapters/http/{model}_handler_gen.go
+    internal/adapters/http/{model}_handler.go    ← contains your custom handler methods
     web/templates/{plural}/                      ← entire template directory
 
   gRPC mode:
-    api/proto/v1/{model}.proto
+    internal/adapters/grpc/pb/{model}.proto
+    internal/adapters/grpc/pb/{model}.pb.go      ← buf-generated, if "make proto" was run
+    internal/adapters/grpc/pb/{model}_grpc.pb.go ← buf-generated, if "make proto" was run
     internal/adapters/grpc/{model}_handler_gen.go
 
 WARNING: {model}_service.go and {model}_store.go contain your hand-written logic.

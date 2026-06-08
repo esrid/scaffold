@@ -68,7 +68,8 @@ func (a *App) Run(ctx context.Context) error {
 	a.grpcServer = grpc.NewServer()
 	healthSrv := health.NewServer()
 	healthpb.RegisterHealthServer(a.grpcServer, healthSrv)
-	// scaffold: register grpc handlers here
+	// scaffold:grpc:start
+	// scaffold:grpc:end
 	if a.cfg.Env != "production" {
 		reflection.Register(a.grpcServer)
 	}

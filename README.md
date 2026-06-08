@@ -76,13 +76,14 @@ scaffold init [dir] --module <path> [--db sqlite|postgres] [--api ssr|rest|grpc]
 Generate or update the full CRUD scaffold for a model. Routes are mounted automatically in `app.go`.
 
 ```
-scaffold gen <Model> [field:type{modifier}!...] [--dry-run] [--table-name <name>]
+scaffold gen <Model> [field:type{modifier}!...] [--remove <field>...] [--dry-run] [--table-name <name>]
 ```
 
-Running `gen` again on an existing model **adds or removes fields** and writes a diff migration. Your hand-written files are never overwritten.
+Running `gen` again on an existing model **merges** the fields you pass into the stored set: a field name that already exists is updated in place, a new name is **added**, and fields you don't mention are **kept**. Passing a subset never drops columns. To drop a field, name it with `--remove`. Each change writes a diff migration; your hand-written files are never overwritten.
 
 | Flag | Description |
 |------|-------------|
+| `--remove` | Drop field(s) from an existing model (comma-separated or repeated). Writes a `DROP COLUMN` migration |
 | `--dry-run` | Preview changes without writing files |
 | `--table-name` | Override the auto-pluralized table name (e.g. `people` for `Person`) |
 
@@ -96,6 +97,11 @@ name:type{mod,mod}!    multiple modifiers, NOT NULL
 ```
 
 `!` and `nn` are equivalent.
+
+> **Quote fields in bash/zsh.** A modifier list with a comma (`{255,unique}`) triggers
+> shell brace expansion, and `check=price>0` is read as a redirection. Wrap any field
+> that contains `{…}` or `>` in single quotes: `'email:string{255,unique}!'`,
+> `'price:float{check=price>0}!'`.
 
 #### Types
 
@@ -135,7 +141,8 @@ scaffold gen Order status:string{default=pending,nn}
 scaffold gen User username:string{92}! email:string{255,unique}!
 scaffold gen Post user_id:string{fk=users,cascade,index}! title:string!
 scaffold gen Event payload:json! metadata:json
-scaffold gen Product name:string! price:float! stock:int   # add stock to existing model
+scaffold gen Product stock:int                             # add stock to an existing model (name, price kept)
+scaffold gen Product --remove stock                        # drop the stock column
 scaffold gen Product name:string! price:float! --dry-run
 scaffold gen Person name:string! --table-name people
 ```
@@ -204,7 +211,7 @@ Same as SSR, except:
 ### gRPC mode (REST + gRPC)
 
 Adds on top of REST:
-- `api/proto/v1/{model}.proto`
+- `internal/adapters/grpc/pb/{model}.proto`
 - `internal/adapters/grpc/{model}_handler_gen.go`
 - `internal/adapters/grpc/shared.go` — error translation (written once)
 - `buf.yaml` + `buf.gen.yaml` — proto code generation config
@@ -230,7 +237,7 @@ Run `make proto` after `scaffold gen` to compile `.proto` → Go pb package.
 | `web/templates/{plural}/*.html` | Always regenerated on field changes |
 | `adapters/grpc/{model}_handler_gen.go` | gRPC only — always regenerated |
 | `adapters/grpc/shared.go` | gRPC only — written once |
-| `api/proto/v1/{model}.proto` | gRPC only — always regenerated |
+| `internal/adapters/grpc/pb/{model}.proto` | gRPC only — always regenerated |
 
 ---
 
@@ -240,7 +247,7 @@ Run `make proto` after `scaffold gen` to compile `.proto` → Go pb package.
 ```bash
 make run     # go run main.go
 make build   # go build -o bin/server
-make proto   # buf generate api/proto/v1  (gRPC only)
+make proto   # buf generate --path internal/adapters/grpc/pb  (gRPC only)
 ```
 
 **REST mode:**
@@ -248,7 +255,7 @@ make proto   # buf generate api/proto/v1  (gRPC only)
 make run     # build TypeScript + go run
 make build   # build TypeScript + go build
 make build-fe  # esbuild TypeScript + CSS only
-make proto   # buf generate api/proto/v1  (gRPC only)
+make proto   # buf generate --path internal/adapters/grpc/pb  (gRPC only)
 ```
 
 ---

@@ -41,27 +41,46 @@ func protoTemplateFuncs() template.FuncMap {
 	return template.FuncMap{
 		// fieldNum returns the proto field number: base + index.
 		"fieldNum": func(idx, base int) int { return base + idx },
-		// protoToDomain renders the right-hand side for domain struct init from a proto request.
+		// protoToDomain renders the right-hand side for a domain struct field,
+		// read from a proto request. It bridges the type differences between
+		// protoc-gen-go output and the domain model: Go int <-> proto int32,
+		// nullable domain pointers <-> proto3 optional (pointer) fields, and
+		// time.Time <-> google.protobuf.Timestamp.
 		"protoToDomain": func(f templateField, recv string) string {
-			getter := "Get" + f.GoName + "()"
-			switch {
-			case f.IsTime && f.IsPointer:
-				return `func() *time.Time { if v := ` + recv + `.` + getter + `; v != nil { t := v.AsTime(); return &t }; return nil }()`
-			case f.IsTime:
-				return recv + "." + getter + ".AsTime()"
+			get := recv + ".Get" + f.ProtoGoName + "()" // value getter
+			ptr := recv + "." + f.ProtoGoName            // optional field is itself a pointer
+			switch f.GoType {
+			case "int":
+				return "int(" + get + ")"
+			case "time.Time":
+				return get + ".AsTime()"
+			case "*time.Time":
+				return `func() *time.Time { if v := ` + get + `; v != nil { t := v.AsTime(); return &t }; return nil }()`
+			case "*int":
+				return `func() *int { if v := ` + ptr + `; v != nil { i := int(*v); return &i }; return nil }()`
+			case "*string", "*int64", "*float64", "*bool":
+				return ptr
 			default:
-				return recv + "." + getter
+				// string, int64, float64, bool, json.RawMessage (bytes)
+				return get
 			}
 		},
-		// domainToProto renders the right-hand side for proto struct init from a domain value.
+		// domainToProto renders the right-hand side for a proto struct field,
+		// written from a domain value. It is the inverse of protoToDomain.
 		"domainToProto": func(f templateField, recv string) string {
 			field := recv + "." + f.GoName
-			switch {
-			case f.IsTime && f.IsPointer:
-				return `func() *timestamppb.Timestamp { if ` + field + ` != nil { return timestamppb.New(*` + field + `) }; return nil }()`
-			case f.IsTime:
+			switch f.GoType {
+			case "int":
+				return "int32(" + field + ")"
+			case "time.Time":
 				return "timestamppb.New(" + field + ")"
+			case "*time.Time":
+				return `func() *timestamppb.Timestamp { if ` + field + ` != nil { return timestamppb.New(*` + field + `) }; return nil }()`
+			case "*int":
+				return `func() *int32 { if ` + field + ` != nil { v := int32(*` + field + `); return &v }; return nil }()`
 			default:
+				// string, int64, float64, bool, json.RawMessage, and *string/
+				// *int64/*float64/*bool whose pointer types already match proto.
 				return field
 			}
 		},
@@ -150,6 +169,7 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 	if g.isSSR() {
 		files = append(files,
 			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"),
+			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go"),
 		)
 		// Remove SSR template directory
 		tmplDir := filepath.Join(g.root, "web", "templates", model.Plural())
@@ -163,18 +183,26 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 	if g.isGRPC() {
 		files = append(files,
 			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto"),
+			// buf-generated code derived from the .proto — orphaned once it is gone.
+			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".pb.go"),
+			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+"_grpc.pb.go"),
 			filepath.Join("internal", "adapters", "grpc", model.Snake()+"_handler_gen.go"),
 		)
 	}
 
 	for _, rel := range files {
 		abs := filepath.Join(g.root, rel)
+		existed := fileExists(abs)
 		if !g.dryRun {
 			if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
 				return nil, fmt.Errorf("destroy: remove %s: %w", rel, err)
 			}
 		}
-		res.Deleted = append(res.Deleted, rel)
+		// Only report files that were actually present, so optional artifacts
+		// (e.g. .pb.go before `make proto`) don't show as deleted phantoms.
+		if existed {
+			res.Deleted = append(res.Deleted, rel)
+		}
 	}
 
 	// Remove table block from schema.sql
@@ -374,6 +402,19 @@ func (g *Generator) scaffoldUpdate(model *parser.Model, res *Result) error {
 		}
 		ssrUserPath := filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go")
 		res.Unchanged = append(res.Unchanged, ssrUserPath)
+	}
+
+	if g.isGRPC() {
+		// Regenerate proto + handler on every update (fields may have changed).
+		// Run `make proto` afterwards to recompile the pb package.
+		protoPath := filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto")
+		if err := g.writeProto(protoPath, model, res); err != nil {
+			return err
+		}
+		handlerPath := filepath.Join("internal", "adapters", "grpc", model.Snake()+"_handler_gen.go")
+		if err := g.writeGRPCHandler(handlerPath, model, res); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -711,11 +752,18 @@ func (g *Generator) writeProto(rel string, model *parser.Model, res *Result) err
 
 func (g *Generator) writeGRPCHandler(rel string, model *parser.Model, res *Result) error {
 	fields := buildTemplateFields(model.Fields, g.manifest.DB)
+	needsTime := false
+	for _, f := range fields {
+		if f.GoType == "*time.Time" {
+			needsTime = true
+		}
+	}
 	ctx := grpcHandlerCtx{
 		ModulePath: g.modulePath,
 		Name:       model.Name,
 		Lower:      model.Lower(),
 		Fields:     fields,
+		NeedsTime:  needsTime,
 	}
 	src, err := renderTemplateWithFuncs(grpcHandlerTmpl, ctx, protoTemplateFuncs())
 	if err != nil {
@@ -935,6 +983,21 @@ func (g *Generator) writeRoutes(res *Result) error {
 	if err != nil {
 		// Marker not found — app.go has the old single-line comment; skip silently
 		return nil
+	}
+
+	// In gRPC mode, also patch the // scaffold:grpc:start/end block with the
+	// per-model service registrations so the handlers are actually reachable.
+	if g.isGRPC() {
+		var grpcLines strings.Builder
+		for _, name := range names {
+			fmt.Fprintf(&grpcLines, "\ta.registry.GRPCHandlers.%s.Register(a.grpcServer)\n", name)
+		}
+		const grpcStart = "// scaffold:grpc:start"
+		const grpcEnd = "// scaffold:grpc:end"
+		grpcBlock := grpcStart + "\n" + grpcLines.String() + "\t" + grpcEnd
+		if patched, perr := replaceMarkerBlock(updated, grpcStart, grpcEnd, grpcBlock); perr == nil {
+			updated = patched
+		}
 	}
 
 	formatted, err := formatter.GoSource(updated)

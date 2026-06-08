@@ -283,6 +283,9 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+{{- range .Fields}}{{if .HasIndex}}
+CREATE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}({{.Name}});
+{{- end}}{{end}}
 
 CREATE TRIGGER IF NOT EXISTS trg_{{.TableName}}_updated_at
 AFTER UPDATE ON {{.TableName}}
@@ -303,6 +306,9 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+{{- range .Fields}}{{if .HasIndex}}
+CREATE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}({{.Name}});
+{{- end}}{{end}}
 
 -- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS trg_{{.TableName}}_updated_at
@@ -357,6 +363,9 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+{{- range .Fields}}{{if .HasIndex}}
+CREATE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}({{.Name}});
+{{- end}}{{end}}
 `
 
 // registryTmpl fully regenerates internal/app/registry.go from the manifest
@@ -850,16 +859,25 @@ package grpcadapter
 
 import (
 	"context"
+{{- if .NeedsTime}}
+	"time"
+{{- end}}
 
 	"{{.ModulePath}}/internal/core/domain"
 	"{{.ModulePath}}/internal/core/ports"
 	pb "{{.ModulePath}}/internal/adapters/grpc/pb"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type {{.Name}}Handler struct {
 	pb.Unimplemented{{.Name}}ServiceServer
 	service ports.{{.Name}}Service
+}
+
+// Register wires this handler into the gRPC server.
+func (h *{{.Name}}Handler) Register(s *grpc.Server) {
+	pb.Register{{.Name}}ServiceServer(s, h)
 }
 
 func New{{.Name}}Handler(service ports.{{.Name}}Service) *{{.Name}}Handler {
@@ -927,7 +945,7 @@ func domainToProto{{.Name}}(p *domain.{{.Name}}) *pb.{{.Name}} {
 	return &pb.{{.Name}}{
 		Id: p.ID,
 {{- range .Fields}}
-		{{.GoName}}: {{domainToProto . "p"}},
+		{{.ProtoGoName}}: {{domainToProto . "p"}},
 {{- end}}
 		CreatedAt: timestamppb.New(p.CreatedAt),
 		UpdatedAt: timestamppb.New(p.UpdatedAt),
@@ -1367,7 +1385,7 @@ func (h *{{.Name}}Handler) serverError(w http.ResponseWriter, err error) {
 // ssrHandlerUserTmpl generates internal/adapters/http/{model}_handler.go (written once).
 const ssrHandlerUserTmpl = `package http
 
-// [[.Name]] custom handler methods — never overwritten by scaffold.
+// {{.Name}} custom handler methods — never overwritten by scaffold.
 `
 
 // ssrListHTMLTmpl generates web/templates/{plural}/list.html
