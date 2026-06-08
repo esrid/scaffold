@@ -162,7 +162,7 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 	}
 	if g.isGRPC() {
 		files = append(files,
-			filepath.Join("api", "proto", "v1", model.Snake()+".proto"),
+			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto"),
 			filepath.Join("internal", "adapters", "grpc", model.Snake()+"_handler_gen.go"),
 		)
 	}
@@ -287,8 +287,9 @@ func (g *Generator) scaffoldCreate(model *parser.Model, res *Result) error {
 	}
 
 	if g.isGRPC() {
-		// api/proto/v1/{model}.proto
-		protoPath := filepath.Join("api", "proto", "v1", model.Snake()+".proto")
+		// internal/adapters/grpc/pb/{model}.proto — generated .pb.go lands
+		// here too (buf source_relative), matching the pb import path.
+		protoPath := filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto")
 		if err := g.writeProto(protoPath, model, res); err != nil {
 			return err
 		}
