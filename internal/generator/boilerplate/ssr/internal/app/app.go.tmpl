@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -104,6 +105,10 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 	{{- end}}
 
+	ln, err := net.Listen("tcp", a.cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", a.cfg.Addr, err)
+	}
 
 	srv := &http.Server{
 		Handler:           a.buildRouter(),
