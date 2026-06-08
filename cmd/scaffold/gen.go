@@ -72,9 +72,8 @@ GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
   SSR mode only:
     internal/adapters/http/product_handler_gen.go SSR handler + typed bindForm — always regenerated
     internal/adapters/http/product_handler.go     your extensions — never overwritten
-    web/templates/products/list.html              table with HTMX delete — regenerated on field changes
-    web/templates/products/form.html              create/edit form — regenerated on field changes
-    web/templates/products/show.html              detail page — regenerated on field changes
+    web/views/product.templ                       templ List/Form/Show components — regenerated on field changes
+                                                  (run "templ generate" — scaffold does this for you)
 
   gRPC mode only:
     api/proto/v1/product.proto                    protobuf definition — always regenerated

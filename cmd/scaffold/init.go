@@ -97,7 +97,7 @@ NEXT STEPS after init
 func init() {
 	initCmd.Flags().StringVar(&initModule, "module", "", "Go module path (e.g. github.com/user/myapp)")
 	initCmd.Flags().StringVar(&initDB, "db", "", "Database driver: sqlite or postgres")
-	initCmd.Flags().StringVar(&initAPIMode, "api", "ssr", "API mode: ssr (html/template+HTMX), rest (JSON API), or grpc")
+	initCmd.Flags().StringVar(&initAPIMode, "api", "ssr", "API mode: ssr (templ+HTMX), rest (JSON API), or grpc")
 	initCmd.Flags().BoolVar(&initGRPC, "grpc", false, "Enable gRPC support — alias for --api grpc (deprecated)")
 	_ = initCmd.MarkFlagRequired("module")
 	rootCmd.AddCommand(initCmd)
