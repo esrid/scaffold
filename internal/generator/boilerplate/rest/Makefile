@@ -21,4 +21,4 @@ clean:
 	rm -rf web/dist bin
 
 proto:
-	buf generate api/proto/v1
+	buf generate --path internal/adapters/grpc/pb

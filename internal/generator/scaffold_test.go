@@ -141,7 +141,7 @@ func TestScaffold_REST_CreatesExpectedFiles(t *testing.T) {
 	assertNotExists(t, root, "web/templates/products/list.html")
 
 	// gRPC-specific files must NOT exist
-	assertNotExists(t, root, "api/proto/v1/product.proto")
+	assertNotExists(t, root, "internal/adapters/grpc/pb/product.proto")
 	assertNotExists(t, root, "internal/adapters/grpc/product_handler_gen.go")
 }
 
@@ -211,7 +211,7 @@ func TestScaffold_SSR_CreatesHTMLTemplates(t *testing.T) {
 	assertExists(t, root, "web/templates/posts/show.html")
 
 	// No JSON handler
-	assertNotExists(t, root, "api/proto/v1/post.proto")
+	assertNotExists(t, root, "internal/adapters/grpc/pb/post.proto")
 }
 
 func TestScaffold_SSR_Registry_UsesPerModelHandler(t *testing.T) {
@@ -329,7 +329,7 @@ func TestScaffold_GRPC_CreatesProtoAndHandler(t *testing.T) {
 	model := genModel(t, manifest, "Product", "name:string!", "price:float!")
 	runScaffold(t, root, manifest, model)
 
-	assertExists(t, root, "api/proto/v1/product.proto")
+	assertExists(t, root, "internal/adapters/grpc/pb/product.proto")
 	assertExists(t, root, "internal/adapters/grpc/product_handler_gen.go")
 	assertExists(t, root, "internal/adapters/grpc/shared.go")
 
@@ -343,7 +343,7 @@ func TestScaffold_GRPC_Proto_FieldNumbers(t *testing.T) {
 	model := genModel(t, manifest, "Product", "name:string!", "price:float!", "sku:string!")
 	runScaffold(t, root, manifest, model)
 
-	proto := assertExists(t, root, "api/proto/v1/product.proto")
+	proto := assertExists(t, root, "internal/adapters/grpc/pb/product.proto")
 	assertContains(t, proto, "string id = 1;", "id is field 1")
 	assertContains(t, proto, "string name = 2;", "name is field 2")
 	assertContains(t, proto, "double price = 3;", "price is field 3")
@@ -360,7 +360,7 @@ func TestScaffold_GRPC_Proto_TypeMapping(t *testing.T) {
 	)
 	runScaffold(t, root, manifest, model)
 
-	proto := assertExists(t, root, "api/proto/v1/item.proto")
+	proto := assertExists(t, root, "internal/adapters/grpc/pb/item.proto")
 	assertContains(t, proto, "string name = 2;", "string→string")
 	assertContains(t, proto, "int32 count = 3;", "int→int32")
 	assertContains(t, proto, "double score = 4;", "float64→double")
@@ -437,12 +437,12 @@ func TestDestroy_GRPC_RemovesProtoAndHandler(t *testing.T) {
 	model := genModel(t, manifest, "Message", "body:string!")
 	runScaffold(t, root, manifest, model)
 
-	assertExists(t, root, "api/proto/v1/message.proto")
+	assertExists(t, root, "internal/adapters/grpc/pb/message.proto")
 	assertExists(t, root, "internal/adapters/grpc/message_handler_gen.go")
 
 	runDestroy(t, root, manifest, model)
 
-	assertNotExists(t, root, "api/proto/v1/message.proto")
+	assertNotExists(t, root, "internal/adapters/grpc/pb/message.proto")
 	assertNotExists(t, root, "internal/adapters/grpc/message_handler_gen.go")
 }
 
