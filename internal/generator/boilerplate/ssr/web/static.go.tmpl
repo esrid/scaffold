@@ -1,0 +1,8 @@
+package web
+
+import "embed"
+
+// StaticFS holds static assets (CSS, JS, images) served under /static/.
+//
+//go:embed static
+var StaticFS embed.FS

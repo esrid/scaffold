@@ -54,7 +54,7 @@ GENERATED PROJECT STRUCTURE
               └── {model}_store*.go  generated + user store files
 
 API MODES
-  --api ssr   (default) html/template + HTMX server-side rendering
+  --api ssr   (default) templ + HTMX server-side rendering
   --api rest  JSON API with generic CRUDHandler[T]
   --api grpc  gRPC server (REST + gRPC hybrid)
 
@@ -156,6 +156,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init: manifest: %w", err)
 	}
 
+	// SSR renders with templ: generate the *_templ.go files BEFORE go mod tidy so
+	// tidy sees the templ runtime imports and keeps the dependency in go.mod.
+	if apiMode == "ssr" {
+		if err := runTemplGenerate(dir); err != nil {
+			return fmt.Errorf("init: %w", err)
+		}
+	}
+
 	// Run go mod tidy
 	fmt.Println("Running go mod tidy...")
 	tidy := exec.Command("go", "mod", "tidy")
@@ -172,6 +180,29 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  cd %s\n", name)
 	}
 	fmt.Printf("  make run\n")
+	return nil
+}
+
+// runTemplGenerate runs `templ generate` in dir so the *_templ.go files exist
+// for SSR projects. If the templ CLI is not installed it prints actionable
+// guidance rather than failing — the project still builds once the user
+// installs templ and runs `make generate` (or `templ generate`).
+func runTemplGenerate(dir string) error {
+	if _, err := exec.LookPath("templ"); err != nil {
+		fmt.Println("⚠ templ CLI not found — SSR views were not generated.")
+		fmt.Println("  Install it, then generate views before building:")
+		fmt.Println("    go install github.com/a-h/templ/cmd/templ@latest")
+		fmt.Println("    templ generate && go mod tidy")
+		return nil
+	}
+	fmt.Println("Running templ generate...")
+	gen := exec.Command("templ", "generate")
+	gen.Dir = dir
+	gen.Stdout = os.Stdout
+	gen.Stderr = os.Stderr
+	if err := gen.Run(); err != nil {
+		return fmt.Errorf("templ generate: %w", err)
+	}
 	return nil
 }
 

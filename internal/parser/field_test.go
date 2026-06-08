@@ -120,3 +120,76 @@ func TestParseField_unknown_modifier_errors(t *testing.T) {
 	}
 }
 
+func TestParseField_array_string(t *testing.T) {
+	fields, err := ParseFields([]string{"tags:[]string!"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := fields[0]
+	if f.GoType != "[]string" {
+		t.Errorf("expected GoType=[]string, got %s", f.GoType)
+	}
+	if f.SQLType != "TEXT" {
+		t.Errorf("expected SQLType=TEXT, got %s", f.SQLType)
+	}
+	if !f.NotNull {
+		t.Error("expected NotNull=true")
+	}
+}
+
+func TestParseField_array_nullable_is_not_pointer(t *testing.T) {
+	// A slice is already nilable, so a nullable array field must not become **[]T.
+	fields, err := ParseFields([]string{"scores:[]int"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fields[0].GoType; got != "[]int" {
+		t.Errorf("expected GoType=[]int (no pointer), got %s", got)
+	}
+}
+
+func TestParseField_array_element_types(t *testing.T) {
+	cases := map[string]string{
+		"a:[]string":  "[]string",
+		"a:[]text":    "[]string",
+		"a:[]int":     "[]int",
+		"a:[]int64":   "[]int64",
+		"a:[]float":   "[]float64",
+		"a:[]float64": "[]float64",
+		"a:[]bool":    "[]bool",
+	}
+	for in, want := range cases {
+		fields, err := ParseFields([]string{in})
+		if err != nil {
+			t.Errorf("%s: unexpected error %v", in, err)
+			continue
+		}
+		if got := fields[0].GoType; got != want {
+			t.Errorf("%s: expected GoType=%s, got %s", in, want, got)
+		}
+	}
+}
+
+func TestParseField_array_with_index_modifier(t *testing.T) {
+	fields, err := ParseFields([]string{"tags:[]string{index}!"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fields[0].Modifiers) != 1 || fields[0].Modifiers[0] != "index" {
+		t.Errorf("expected Modifiers=[index], got %v", fields[0].Modifiers)
+	}
+}
+
+func TestParseField_array_rejects_time_and_json(t *testing.T) {
+	for _, in := range []string{"a:[]time", "a:[]json", "a:[]datetime"} {
+		if _, err := ParseFields([]string{in}); err == nil {
+			t.Errorf("expected error for invalid array element type %q", in)
+		}
+	}
+}
+
+func TestParseField_array_rejects_size_modifier(t *testing.T) {
+	if _, err := ParseFields([]string{"a:[]string{40}"}); err == nil {
+		t.Error("expected error: size modifier invalid for array")
+	}
+}

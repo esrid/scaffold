@@ -138,7 +138,7 @@ func TestScaffold_REST_CreatesExpectedFiles(t *testing.T) {
 
 	// SSR-specific files must NOT exist
 	assertNotExists(t, root, "internal/adapters/http/product_handler_gen.go")
-	assertNotExists(t, root, "web/templates/products/list.html")
+	assertNotExists(t, root, "web/views/product.templ")
 
 	// gRPC-specific files must NOT exist
 	assertNotExists(t, root, "internal/adapters/grpc/pb/product.proto")
@@ -199,16 +199,17 @@ func TestScaffold_REST_Store_Postgres_UsesDollarPlaceholders(t *testing.T) {
 
 // ---- SSR mode tests ----
 
-func TestScaffold_SSR_CreatesHTMLTemplates(t *testing.T) {
+func TestScaffold_SSR_CreatesTemplViews(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 	model := genModel(t, manifest, "Post", "title:string!", "body:string!", "views:int")
 	runScaffold(t, root, manifest, model)
 
 	assertExists(t, root, "internal/adapters/http/post_handler_gen.go")
 	assertExists(t, root, "internal/adapters/http/post_handler.go")
-	assertExists(t, root, "web/templates/posts/list.html")
-	assertExists(t, root, "web/templates/posts/form.html")
-	assertExists(t, root, "web/templates/posts/show.html")
+	view := assertExists(t, root, "web/views/post.templ")
+	assertContains(t, view, "templ PostList(", "List component")
+	assertContains(t, view, "templ PostForm(", "Form component")
+	assertContains(t, view, "templ PostShow(", "Show component")
 
 	// No JSON handler
 	assertNotExists(t, root, "internal/adapters/grpc/pb/post.proto")
@@ -221,7 +222,7 @@ func TestScaffold_SSR_Registry_UsesPerModelHandler(t *testing.T) {
 
 	reg := assertExists(t, root, "internal/app/registry.go")
 	assertContains(t, reg, "*httpadapter.PostHandler", "SSR registry uses per-model handler")
-	assertContains(t, reg, "template.Template", "SSR registry takes tmpl param")
+	assertNotContains(t, reg, "template.Template", "templ SSR registry must not take tmpl param")
 	assertContains(t, reg, "httpadapter.NewPostHandler(svcs.Post", "SSR registry wires handler")
 	assertNotContains(t, reg, "CRUDHandler[domain.Post]", "SSR must not use generic CRUDHandler")
 	assertGoSyntax(t, reg, "registry.go")
@@ -251,6 +252,27 @@ func TestScaffold_SSR_Handler_BindForm_AllScalarTypes(t *testing.T) {
 	assertGoSyntax(t, handler, "thing_handler_gen.go")
 }
 
+func TestScaffold_SSR_Handler_BindForm_ArrayTypes(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "ssr")
+	model := genModel(t, manifest, "Bag",
+		"tags:[]string!", "scores:[]int", "ids:[]int64", "weights:[]float64", "flags:[]bool",
+	)
+	runScaffold(t, root, manifest, model)
+
+	handler := assertExists(t, root, "internal/adapters/http/bag_handler_gen.go")
+
+	// Every array element type binds from the multi-valued form field.
+	assertContains(t, handler, `r.Form["tags"]`, "[]string bind reads multi-valued form")
+	assertContains(t, handler, `item.Tags = v`, "[]string assigned directly")
+	assertContains(t, handler, `r.Form["scores"]`, "[]int bind")
+	assertContains(t, handler, `strconv.Atoi(s)`, "[]int parses each element")
+	assertContains(t, handler, `strconv.ParseInt(s, 10, 64)`, "[]int64 parses each element")
+	assertContains(t, handler, `strconv.ParseFloat(s, 64)`, "[]float64 parses each element")
+	assertContains(t, handler, `s == "on" || s == "true"`, "[]bool parses each element")
+
+	assertGoSyntax(t, handler, "bag_handler_gen.go")
+}
+
 func TestScaffold_SSR_Handler_HasHTMXDelete(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 	model := genModel(t, manifest, "Widget", "name:string!")
@@ -261,56 +283,55 @@ func TestScaffold_SSR_Handler_HasHTMXDelete(t *testing.T) {
 	assertGoSyntax(t, handler, "widget_handler_gen.go")
 }
 
-func TestScaffold_SSR_ListHTML_ContainsModelFields(t *testing.T) {
+func TestScaffold_SSR_ListView_ContainsModelFields(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 	model := genModel(t, manifest, "Book", "title:string!", "author:string!", "pages:int!")
 	runScaffold(t, root, manifest, model)
 
-	list := assertExists(t, root, "web/templates/books/list.html")
-	assertContains(t, list, "Title", "list template column header")
-	assertContains(t, list, "Author", "list template column header")
-	assertContains(t, list, "Pages", "list template column header")
-	assertContains(t, list, "{{ .Title }}", "list template field value")
-	assertContains(t, list, "{{ .Author }}", "list template field value")
-	assertContains(t, list, "/books/new", "new link")
-	assertContains(t, list, "hx-delete", "HTMX delete button")
-	assertContains(t, list, `template "header"`, "uses layout header")
-	assertContains(t, list, `template "footer"`, "uses layout footer")
+	view := assertExists(t, root, "web/views/book.templ")
+	assertContains(t, view, "Title", "list column header")
+	assertContains(t, view, "Author", "list column header")
+	assertContains(t, view, "Pages", "list column header")
+	assertContains(t, view, "display(item.Title)", "list field value")
+	assertContains(t, view, "display(item.Author)", "list field value")
+	assertContains(t, view, "/books/new", "new link")
+	assertContains(t, view, "hx-delete", "HTMX delete button")
+	assertContains(t, view, "@Layout(", "wraps content in shared layout")
 }
 
-func TestScaffold_SSR_FormHTML_ContainsInputs(t *testing.T) {
+func TestScaffold_SSR_FormView_ContainsInputs(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 	model := genModel(t, manifest, "Book", "title:string!", "pages:int!", "published:bool!")
 	runScaffold(t, root, manifest, model)
 
-	form := assertExists(t, root, "web/templates/books/form.html")
-	assertContains(t, form, `name="title"`, "title input")
-	assertContains(t, form, `name="pages"`, "pages input")
-	assertContains(t, form, `name="published"`, "boolean input")
-	assertContains(t, form, `type="checkbox"`, "bool renders as checkbox")
-	assertContains(t, form, "/books", "action URL contains plural")
+	view := assertExists(t, root, "web/views/book.templ")
+	assertContains(t, view, `name="title"`, "title input")
+	assertContains(t, view, `name="pages"`, "pages input")
+	assertContains(t, view, `name="published"`, "boolean input")
+	assertContains(t, view, `type="checkbox"`, "bool renders as checkbox")
+	assertContains(t, view, "/books", "action URL contains plural")
 }
 
-func TestScaffold_SSR_ShowHTML_ContainsFields(t *testing.T) {
+func TestScaffold_SSR_ShowView_ContainsFields(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 	model := genModel(t, manifest, "Event", "name:string!", "capacity:int!")
 	runScaffold(t, root, manifest, model)
 
-	show := assertExists(t, root, "web/templates/events/show.html")
-	assertContains(t, show, "Name", "show field label")
-	assertContains(t, show, "Capacity", "show field label")
-	assertContains(t, show, "{{ .Item.Name }}", "show field value")
-	assertContains(t, show, "hx-delete", "HTMX delete in show page")
+	view := assertExists(t, root, "web/views/event.templ")
+	assertContains(t, view, "Name", "show field label")
+	assertContains(t, view, "Capacity", "show field label")
+	assertContains(t, view, "display(item.Name)", "show field value")
+	assertContains(t, view, "hx-delete", "HTMX delete in show page")
 }
 
-func TestScaffold_SSR_Update_RegeneratesTemplates(t *testing.T) {
+func TestScaffold_SSR_Update_RegeneratesViews(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 
 	// First gen
 	model := genModel(t, manifest, "Task", "title:string!")
 	runScaffold(t, root, manifest, model)
 
-	list1 := readFile(t, root, "web/templates/tasks/list.html")
+	list1 := readFile(t, root, "web/views/task.templ")
 	assertContains(t, list1, "Title", "first gen has title")
 	assertNotContains(t, list1, "Priority", "first gen has no priority")
 
@@ -318,7 +339,7 @@ func TestScaffold_SSR_Update_RegeneratesTemplates(t *testing.T) {
 	model2 := genModel(t, manifest, "Task", "title:string!", "priority:int!")
 	runScaffold(t, root, manifest, model2)
 
-	list2 := readFile(t, root, "web/templates/tasks/list.html")
+	list2 := readFile(t, root, "web/views/task.templ")
 	assertContains(t, list2, "Priority", "second gen adds priority")
 }
 
@@ -329,17 +350,16 @@ func TestScaffold_NoFields_KeepsExistingFields(t *testing.T) {
 	model := genModel(t, manifest, "Task", "title:string!")
 	runScaffold(t, root, manifest, model)
 
-	list1 := readFile(t, root, "web/templates/tasks/list.html")
+	list1 := readFile(t, root, "web/views/task.templ")
 	assertContains(t, list1, "Title", "first gen has title")
 
 	// Second gen (no fields)
 	model2 := genModel(t, manifest, "Task")
 	runScaffold(t, root, manifest, model2)
 
-	list2 := readFile(t, root, "web/templates/tasks/list.html")
+	list2 := readFile(t, root, "web/views/task.templ")
 	assertContains(t, list2, "Title", "second gen with no fields preserves title")
 }
-
 
 // ---- gRPC mode tests ----
 
@@ -354,7 +374,7 @@ func TestScaffold_GRPC_CreatesProtoAndHandler(t *testing.T) {
 
 	// SSR templates must NOT exist in gRPC mode
 	assertNotExists(t, root, "internal/adapters/http/product_handler_gen.go")
-	assertNotExists(t, root, "web/templates/products/list.html")
+	assertNotExists(t, root, "web/views/product.templ")
 }
 
 func TestScaffold_GRPC_Proto_FieldNumbers(t *testing.T) {
@@ -441,14 +461,12 @@ func TestDestroy_SSR_RemovesHandlerAndTemplates(t *testing.T) {
 	runScaffold(t, root, manifest, model)
 
 	assertExists(t, root, "internal/adapters/http/note_handler_gen.go")
-	assertExists(t, root, "web/templates/notes/list.html")
+	assertExists(t, root, "web/views/note.templ")
 
 	runDestroy(t, root, manifest, model)
 
 	assertNotExists(t, root, "internal/adapters/http/note_handler_gen.go")
-	assertNotExists(t, root, "web/templates/notes/list.html")
-	assertNotExists(t, root, "web/templates/notes/form.html")
-	assertNotExists(t, root, "web/templates/notes/show.html")
+	assertNotExists(t, root, "web/views/note.templ")
 }
 
 func TestDestroy_GRPC_RemovesProtoAndHandler(t *testing.T) {
@@ -511,8 +529,8 @@ func TestScaffold_MultipleModels_SSR_EachGetsTemplates(t *testing.T) {
 	m2 := genModel(t, manifest, "Comment", "body:string!")
 	runScaffold(t, root, manifest, m2)
 
-	assertExists(t, root, "web/templates/posts/list.html")
-	assertExists(t, root, "web/templates/comments/list.html")
+	assertExists(t, root, "web/views/post.templ")
+	assertExists(t, root, "web/views/comment.templ")
 
 	reg := assertExists(t, root, "internal/app/registry.go")
 	assertContains(t, reg, "*httpadapter.PostHandler", "registry has Post")

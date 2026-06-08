@@ -14,6 +14,14 @@ import (
 	scaffoldparser "github.com/esrid/scaffold/internal/parser"
 )
 
+// requiresTempl skips the test if the templ CLI is not installed.
+func requiresTempl(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("templ"); err != nil {
+		t.Skip("templ CLI not installed, skipping SSR compile test")
+	}
+}
+
 // requiresNetwork skips the test if the Go module proxy is unreachable.
 func requiresNetwork(t *testing.T) {
 	t.Helper()
@@ -80,6 +88,16 @@ func initAndBuild(t *testing.T, db, apiMode string, models []modelDef) string {
 		return dir
 	}
 
+	// SSR projects render with templ — generate the *_templ.go files before build.
+	if apiMode == "ssr" {
+		requiresTempl(t)
+		gen := exec.Command("templ", "generate")
+		gen.Dir = dir
+		if out, err := gen.CombinedOutput(); err != nil {
+			t.Fatalf("templ generate:\n%s\n%v", out, err)
+		}
+	}
+
 	// go mod tidy downloads all dependencies
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Dir = dir
@@ -125,6 +143,42 @@ func TestCompile_SSR_Postgres(t *testing.T) {
 func TestCompile_GRPC_SQLite(t *testing.T) {
 	initAndBuild(t, "sqlite", "grpc", []modelDef{
 		{"Order", []string{"status:string!", "total:float!"}},
+	})
+}
+
+// TestCompile_Arrays_SQLite verifies array fields render and compile on SQLite
+// (JSON-encoded TEXT columns).
+func TestCompile_Arrays_SQLite(t *testing.T) {
+	initAndBuild(t, "sqlite", "ssr", []modelDef{
+		{"Post", []string{
+			"title:string!",
+			"tags:[]string!", "scores:[]int", "ids:[]int64",
+			"weights:[]float64", "flags:[]bool",
+		}},
+	})
+}
+
+// TestCompile_Arrays_Postgres verifies array fields render and compile on
+// Postgres (native array columns scanned/inserted by pgx).
+func TestCompile_Arrays_Postgres(t *testing.T) {
+	initAndBuild(t, "postgres", "rest", []modelDef{
+		{"Post", []string{
+			"title:string!",
+			"tags:[]string!", "scores:[]int", "ids:[]int64",
+			"weights:[]float64", "flags:[]bool",
+		}},
+	})
+}
+
+// TestCompile_Arrays_GRPC verifies repeated proto fields and the []int<->[]int32
+// bridges render and compile.
+func TestCompile_Arrays_GRPC(t *testing.T) {
+	initAndBuild(t, "sqlite", "grpc", []modelDef{
+		{"Post", []string{
+			"title:string!",
+			"tags:[]string!", "scores:[]int", "ids:[]int64",
+			"weights:[]float64", "flags:[]bool",
+		}},
 	})
 }
 

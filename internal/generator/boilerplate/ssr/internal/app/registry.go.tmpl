@@ -3,7 +3,6 @@
 package app
 
 import (
-	"html/template"
 	"log/slog"
 	{{- if eq .DB "postgres"}}
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,9 +32,9 @@ type Registry struct {
 
 // NewRegistry constructs and wires the entire dependency graph statically at startup.
 {{- if eq .DB "postgres"}}
-func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, tmpl *template.Template) *Registry {
+func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) *Registry {
 {{- else}}
-func NewRegistry(db *sql.DB, logger *slog.Logger, tmpl *template.Template) *Registry {
+func NewRegistry(db *sql.DB, logger *slog.Logger) *Registry {
 {{- end}}
 	stores := &Stores{}
 

@@ -16,6 +16,7 @@ type templateField struct {
 	SQLType      string
 	NotNull      bool
 	IsJSON       bool
+	IsArray      bool // true when GoType is a slice ([]string, []int, ...)
 	IsTime       bool
 	IsPointer    bool   // true when GoType starts with "*"
 	ProtoType    string // e.g. "string", "optional int32", "google.protobuf.Timestamp"
@@ -127,6 +128,7 @@ func buildTemplateFields(fields []parser.Field, db string) []templateField {
 			SQLType:      sqlType,
 			NotNull:      f.NotNull,
 			IsJSON:       strings.Contains(f.GoType, "RawMessage"),
+			IsArray:      strings.HasPrefix(f.GoType, "[]"),
 			IsTime:       strings.Contains(f.GoType, "time.Time"),
 			IsPointer:    isPointer,
 			ProtoType:    protoType(f.GoType),
@@ -140,6 +142,13 @@ func buildTemplateFields(fields []parser.Field, db string) []templateField {
 
 // protoType maps a Go type string to the corresponding proto3 type declaration.
 func protoType(goType string) string {
+	// Slices become proto3 repeated fields (which are inherently nullable, so
+	// the element type is mapped without the "optional" qualifier).
+	if elem, ok := strings.CutPrefix(goType, "[]"); ok {
+		base := protoType(elem)
+		base = strings.TrimPrefix(base, "optional ")
+		return "repeated " + base
+	}
 	switch goType {
 	case "string":
 		return "string"
@@ -173,6 +182,11 @@ func protoType(goType string) string {
 // pgSQLType translates SQLite SQL types to native Postgres types.
 func pgSQLType(f parser.Field) string {
 	goType := f.GoType
+	// Native Postgres arrays: map the element type, then append "[]".
+	if strings.HasPrefix(goType, "[]") {
+		elem := parser.Field{GoType: strings.TrimPrefix(goType, "[]"), SQLType: "TEXT"}
+		return pgSQLType(elem) + "[]"
+	}
 	switch {
 	case strings.Contains(goType, "int64"):
 		return "BIGINT"
@@ -313,7 +327,7 @@ func buildStoreGenCtx(model *parser.Model, modulePath string, db string) storeGe
 	// Create args: id is DB-generated, pass only user fields.
 	var createArgParts []string
 	for _, f := range fields {
-		if f.IsJSON && db != "postgres" {
+		if (f.IsJSON || f.IsArray) && db != "postgres" {
 			createArgParts = append(createArgParts, fmt.Sprintf("func() []byte { b, _ := json.Marshal(p.%s); return b }()", f.GoName))
 		} else {
 			createArgParts = append(createArgParts, "p."+f.GoName)
@@ -324,7 +338,7 @@ func buildStoreGenCtx(model *parser.Model, modulePath string, db string) storeGe
 	// Update args: user fields + p.ID last
 	updateArgParts := make([]string, 0, len(fields)+1)
 	for _, f := range fields {
-		if f.IsJSON && db != "postgres" {
+		if (f.IsJSON || f.IsArray) && db != "postgres" {
 			updateArgParts = append(updateArgParts, fmt.Sprintf("func() []byte { b, _ := json.Marshal(p.%s); return b }()", f.GoName))
 		} else {
 			updateArgParts = append(updateArgParts, "p."+f.GoName)
@@ -337,7 +351,7 @@ func buildStoreGenCtx(model *parser.Model, modulePath string, db string) storeGe
 	scanArgParts := make([]string, 0, len(fields)+3)
 	scanArgParts = append(scanArgParts, "&p.ID")
 	for _, f := range fields {
-		if f.IsJSON {
+		if f.IsJSON || f.IsArray {
 			scanArgParts = append(scanArgParts, "&"+f.GoName+"Bytes")
 		} else {
 			scanArgParts = append(scanArgParts, "&p."+f.GoName)
@@ -348,7 +362,7 @@ func buildStoreGenCtx(model *parser.Model, modulePath string, db string) storeGe
 
 	needsJSON := false
 	for _, f := range fields {
-		if f.IsJSON {
+		if f.IsJSON || f.IsArray {
 			needsJSON = true
 		}
 	}

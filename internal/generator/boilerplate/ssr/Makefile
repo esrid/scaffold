@@ -1,12 +1,15 @@
-.PHONY: all build run clean proto
+.PHONY: all build run clean proto generate
 
 all: build
 
-build:
+generate:
+	templ generate
+
+build: generate
 	@mkdir -p bin
 	go build -o bin/server main.go
 
-run:
+run: generate
 	go run main.go
 
 clean:

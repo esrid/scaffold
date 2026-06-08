@@ -4,18 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	httpAdapter "{{.Module}}/internal/adapters/http"
 	"{{.Module}}/internal/adapters/store"
 	"{{.Module}}/web"
+	"{{.Module}}/web/views"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	{{- if eq .DB "postgres"}}
@@ -40,7 +38,6 @@ type App struct {
 	{{- end}}
 	logger   *slog.Logger
 	registry *Registry
-	tmpl     *template.Template
 	{{- if .GRPC}}
 	grpcServer *grpc.Server
 	{{- end}}
@@ -63,11 +60,6 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 	}
 	{{- end}}
 
-	tmpl, err := loadTemplates(cfg.Env)
-	if err != nil {
-		return nil, fmt.Errorf("load templates: %w", err)
-	}
-
 	return &App{
 		cfg:    cfg,
 		{{- if eq .DB "postgres"}}
@@ -76,11 +68,10 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 		db:     db,
 		{{- end}}
 		logger:   logger,
-		tmpl:     tmpl,
 		{{- if eq .DB "postgres"}}
-		registry: NewRegistry(pool, logger, tmpl),
+		registry: NewRegistry(pool, logger),
 		{{- else}}
-		registry: NewRegistry(db, logger, tmpl),
+		registry: NewRegistry(db, logger),
 		{{- end}}
 	}, nil
 }
@@ -151,9 +142,10 @@ func (a *App) mountMiddlewares(r *chi.Mux) {
 
 func (a *App) mountRoutes(r *chi.Mux) {
 	r.Get("/health", a.healthHandler)
+	r.Handle("/static/*", http.FileServerFS(web.StaticFS))
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := a.tmpl.ExecuteTemplate(w, "home.html", map[string]any{"Title": "Home"}); err != nil {
+		if err := views.Home().Render(r.Context(), w); err != nil {
 			a.logger.Error("render home", "err", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
@@ -229,46 +221,4 @@ func buildLogger(logLevel, env string) *slog.Logger {
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 	return logger
-}
-
-func loadTemplates(env string) (*template.Template, error) {
-	var fsys fs.FS
-	var err error
-	if env == "production" {
-		fsys, err = fs.Sub(web.TemplatesFS, "templates")
-		if err != nil {
-			return nil, fmt.Errorf("templates sub fs: %w", err)
-		}
-	} else {
-		fsys = os.DirFS("web/templates")
-	}
-
-	tmpl := template.New("")
-
-	// Register every .html file under its path relative to the templates root
-	// (e.g. "home.html", "products/list.html"). ParseFS/ParseGlob name templates
-	// by base name, which collides across models — every model ships
-	// list.html/form.html/show.html — so handlers that render "products/list.html"
-	// would not find them. Walk and name each template by its full relative path.
-	err = fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".html") {
-			return nil
-		}
-		content, readErr := fs.ReadFile(fsys, path)
-		if readErr != nil {
-			return fmt.Errorf("read template %s: %w", path, readErr)
-		}
-		if _, parseErr := tmpl.New(path).Parse(string(content)); parseErr != nil {
-			return fmt.Errorf("parse template %s: %w", path, parseErr)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("load templates: %w", err)
-	}
-
-	return tmpl, nil
 }

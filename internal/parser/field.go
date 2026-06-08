@@ -44,6 +44,13 @@ var typeMap = map[string][2]string{
 	"json":     {"json.RawMessage", "TEXT"},
 }
 
+// arrayElementTypes is the set of CLI types permitted as array elements.
+// time and json are excluded: a JSON column already stores arbitrary structures.
+var arrayElementTypes = map[string]bool{
+	"string": true, "text": true, "int": true, "int64": true,
+	"float": true, "float64": true, "bool": true,
+}
+
 // ParseFields parses a slice of "name:type{mod}!" strings into Fields.
 func ParseFields(args []string) ([]Field, error) {
 	seen := map[string]bool{}
@@ -98,6 +105,17 @@ func parseField(arg string) (Field, error) {
 	}
 
 	typeName := strings.ToLower(strings.TrimSpace(rest))
+
+	// Detect "[]base" array syntax (e.g. "[]string", "[]int").
+	isArray := strings.HasPrefix(typeName, "[]")
+	if isArray {
+		typeName = strings.TrimSpace(typeName[2:])
+		if !arrayElementTypes[typeName] {
+			return Field{}, fmt.Errorf("type %q cannot be used as an array element for field %q — valid element types: %s",
+				typeName, name, validArrayElementTypes())
+		}
+	}
+
 	types, ok := typeMap[typeName]
 	if !ok {
 		return Field{}, fmt.Errorf("unknown type %q for field %q — valid types: %s",
@@ -106,6 +124,13 @@ func parseField(arg string) (Field, error) {
 
 	goType := types[0]
 	sqlType := types[1]
+
+	if isArray {
+		// Slice Go type; stored as a JSON-encoded TEXT column on SQLite and a
+		// native array on Postgres (resolved per-DB in the generator).
+		goType = "[]" + goType
+		sqlType = "TEXT"
+	}
 
 	// Process special modifiers: nn (notnull alias), numeric size (VARCHAR), others pass through.
 	filtered := make([]string, 0, len(modifiers))
@@ -136,7 +161,7 @@ func parseField(arg string) (Field, error) {
 		}
 	}
 	if varcharLen > 0 {
-		if typeName != "string" && typeName != "text" {
+		if isArray || (typeName != "string" && typeName != "text") {
 			return Field{}, fmt.Errorf("field %q: size modifier only valid for string/text types", name)
 		}
 		sqlType = fmt.Sprintf("VARCHAR(%d)", varcharLen)
@@ -162,8 +187,9 @@ func parseField(arg string) (Field, error) {
 		return Field{}, fmt.Errorf("field %q: cascade and setnull are mutually exclusive", name)
 	}
 
-	// nullable fields use pointer types (except json.RawMessage)
-	if !notNull && goType != "json.RawMessage" {
+	// nullable fields use pointer types (except json.RawMessage and slices,
+	// which are already nilable).
+	if !notNull && goType != "json.RawMessage" && !isArray {
 		goType = "*" + goType
 	}
 
@@ -200,6 +226,10 @@ func validateFieldName(name string) error {
 func validTypes() string {
 	types := []string{"string", "text", "int", "int64", "float", "float64", "bool", "time", "datetime", "json"}
 	return strings.Join(types, ", ")
+}
+
+func validArrayElementTypes() string {
+	return "string, text, int, int64, float, float64, bool"
 }
 
 // isNumeric reports whether s is a non-empty string of ASCII digits.

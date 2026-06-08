@@ -48,8 +48,11 @@ func protoTemplateFuncs() template.FuncMap {
 		// time.Time <-> google.protobuf.Timestamp.
 		"protoToDomain": func(f templateField, recv string) string {
 			get := recv + ".Get" + f.ProtoGoName + "()" // value getter
-			ptr := recv + "." + f.ProtoGoName            // optional field is itself a pointer
+			ptr := recv + "." + f.ProtoGoName           // optional field is itself a pointer
 			switch f.GoType {
+			case "[]int":
+				// proto repeated int32 -> domain []int
+				return `func() []int { s := ` + get + `; out := make([]int, len(s)); for i, v := range s { out[i] = int(v) }; return out }()`
 			case "int":
 				return "int(" + get + ")"
 			case "time.Time":
@@ -70,6 +73,9 @@ func protoTemplateFuncs() template.FuncMap {
 		"domainToProto": func(f templateField, recv string) string {
 			field := recv + "." + f.GoName
 			switch f.GoType {
+			case "[]int":
+				// domain []int -> proto repeated int32
+				return `func() []int32 { out := make([]int32, len(` + field + `)); for i, v := range ` + field + ` { out[i] = int32(v) }; return out }()`
 			case "int":
 				return "int32(" + field + ")"
 			case "time.Time":
@@ -171,14 +177,18 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"),
 			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go"),
 		)
-		// Remove SSR template directory
-		tmplDir := filepath.Join(g.root, "web", "templates", model.Plural())
-		if !g.dryRun {
-			if err := os.RemoveAll(tmplDir); err != nil && !os.IsNotExist(err) {
-				return nil, fmt.Errorf("destroy: remove templates dir %s: %w", tmplDir, err)
+		// Remove the templ view source and any generated *_templ.go counterpart.
+		viewSrc := filepath.Join("web", "views", model.Snake()+".templ")
+		viewGen := filepath.Join("web", "views", model.Snake()+"_templ.go")
+		for _, rel := range []string{viewSrc, viewGen} {
+			abs := filepath.Join(g.root, rel)
+			if !g.dryRun {
+				if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+					return nil, fmt.Errorf("destroy: remove %s: %w", rel, err)
+				}
 			}
+			res.Deleted = append(res.Deleted, rel)
 		}
-		res.Deleted = append(res.Deleted, filepath.Join("web", "templates", model.Plural()))
 	}
 	if g.isGRPC() {
 		files = append(files,
@@ -308,7 +318,7 @@ func (g *Generator) scaffoldCreate(model *parser.Model, res *Result) error {
 		}, res); err != nil {
 			return err
 		}
-		// web/templates/{plural}/*.html — SSR HTML templates (always regenerated)
+		// web/views/{model}.templ — templ components (always regenerated)
 		if err := g.writeSSRTemplates(model, res); err != nil {
 			return err
 		}
@@ -822,6 +832,9 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 	fields := buildTemplateFields(model.Fields, g.manifest.DB)
 	needsStrconv := false
 	for _, f := range fields {
+		// bindForm parses int/int64/float values with strconv — for both scalar
+		// fields and array fields ([]int/[]int64/[]float64). string and bool
+		// (and []string/[]bool) need no strconv.
 		if strings.Contains(f.GoType, "int") || strings.Contains(f.GoType, "float") {
 			needsStrconv = true
 			break
@@ -870,37 +883,32 @@ func (g *Generator) writeSSRTemplates(model *parser.Model, res *Result) error {
 		Fields:     fields,
 	}
 
-	type htmlFile struct {
-		relPath string
-		tmpl    string
+	rel := filepath.Join("web", "views", model.Snake()+".templ")
+	content, err := renderTemplateHTML(ssrViewTmpl, ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
 	}
-	htmlFiles := []htmlFile{
-		{filepath.Join("web", "templates", model.Plural(), "list.html"), ssrListHTMLTmpl},
-		{filepath.Join("web", "templates", model.Plural(), "form.html"), ssrFormHTMLTmpl},
-		{filepath.Join("web", "templates", model.Plural(), "show.html"), ssrShowHTMLTmpl},
+	abs := filepath.Join(g.root, rel)
+	existed := fileExists(abs)
+	if !g.dryRun {
+		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
+		}
+		if err := os.WriteFile(abs, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
 	}
-
-	for _, hf := range htmlFiles {
-		content, err := renderTemplateHTML(hf.tmpl, ctx)
-		if err != nil {
-			return fmt.Errorf("%s: %w", hf.relPath, err)
-		}
-		abs := filepath.Join(g.root, hf.relPath)
-		if !g.dryRun {
-			if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
-				return fmt.Errorf("mkdir %s: %w", filepath.Dir(hf.relPath), err)
-			}
-			if err := os.WriteFile(abs, []byte(content), 0644); err != nil {
-				return fmt.Errorf("write %s: %w", hf.relPath, err)
-			}
-		}
-		res.Created = append(res.Created, hf.relPath)
+	if existed {
+		res.Overwritten = append(res.Overwritten, rel)
+	} else {
+		res.Created = append(res.Created, rel)
 	}
 	return nil
 }
 
 // renderTemplateHTML renders a template using [[ ]] as outer delimiters so that
-// {{ }} in the output is treated as literal text (used for generating HTML template files).
+// { } and {{ }} in the output are treated as literal text (used for generating
+// templ component files, whose own { } expression syntax must pass through).
 func renderTemplateHTML(tmplStr string, data any) (string, error) {
 	funcs := template.FuncMap{
 		"add": func(a, b int) int { return a + b },

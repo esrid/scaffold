@@ -1,6 +1,6 @@
 # scaffold
 
-A CLI that bootstraps production-ready Go apps with hexagonal architecture. Choose your API mode — **SSR** (html/template + HTMX, default), **REST** (JSON API), or **gRPC** — then add, update, and remove models without touching boilerplate.
+A CLI that bootstraps production-ready Go apps with hexagonal architecture. Choose your API mode — **SSR** (templ + HTMX, default), **REST** (JSON API), or **gRPC** — then add, update, and remove models without touching boilerplate.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ go build -o scaffold .
 ## Quick start
 
 ```bash
-# SSR project (default — html/template + HTMX + Tailwind)
+# SSR project (default — templ + HTMX + plain CSS)
 scaffold init myapp --module github.com/you/myapp --db sqlite
 cd myapp && make run
 
@@ -65,7 +65,7 @@ scaffold init [dir] --module <path> [--db sqlite|postgres] [--api ssr|rest|grpc]
 
 | Mode | What you get |
 |------|-------------|
-| `ssr` | html/template pages, HTMX, Tailwind CDN, per-model HTML templates |
+| `ssr` | templ-rendered pages, HTMX, plain CSS stylesheet, per-model templ components |
 | `rest` | JSON CRUD API, generic `CRUDHandler[T]`, TypeScript/esbuild frontend scaffold |
 | `grpc` | REST + gRPC dual-stack, health check, per-model `.proto` + handler |
 
@@ -191,15 +191,18 @@ myapp/
             ├── {model}_store_gen.go
             └── {model}_store.go
 web/
-├── templates/
-│   ├── layout.html                    # header/footer partials
-│   ├── home.html
-│   └── {plural}/
-│       ├── list.html                  # table with HTMX delete (regenerated)
-│       ├── form.html                  # create/edit form (regenerated)
-│       └── show.html                  # detail page (regenerated)
-└── templates.go                       # //go:embed for production
+├── static/
+│   └── app.css                        # plain CSS stylesheet (served at /static/)
+├── static.go                          # //go:embed for static assets
+└── views/
+    ├── layout.templ                   # shared page layout component
+    ├── home.templ
+    ├── helpers.go                     # display/truthy template helpers
+    └── {model}.templ                  # List/Form/Show components (regenerated)
 ```
+
+> templ compiles `.templ` files to Go. Run `make generate` (or `templ generate`)
+> after `scaffold gen` and before building.
 
 ### REST mode
 
@@ -234,7 +237,7 @@ Run `make proto` after `scaffold gen` to compile `.proto` → Go pb package.
 | `app/app.go` (route block) | Routes section regenerated; rest is yours |
 | `http/{model}_handler_gen.go` | SSR only — always regenerated |
 | `http/{model}_handler.go` | SSR only — yours |
-| `web/templates/{plural}/*.html` | Always regenerated on field changes |
+| `web/views/{model}.templ` | SSR only — always regenerated on field changes |
 | `adapters/grpc/{model}_handler_gen.go` | gRPC only — always regenerated |
 | `adapters/grpc/shared.go` | gRPC only — written once |
 | `internal/adapters/grpc/pb/{model}.proto` | gRPC only — always regenerated |

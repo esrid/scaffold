@@ -42,6 +42,8 @@ TYPES
   bool                BOOLEAN (postgres) / INTEGER (sqlite)
   json                TEXT / JSONB
   time, datetime      DATETIME / TIMESTAMPTZ
+  []<type>            array of any scalar type above except time/json
+                      (Go slice; native array on postgres, JSON-encoded TEXT on sqlite)
 
 MODIFIERS  (go inside {…}, comma-separated)
   nn                  NOT NULL — alias for ! suffix
@@ -114,6 +116,9 @@ EXAMPLES
   # JSON field (JSONB on postgres, TEXT on sqlite)
   scaffold gen Event payload:json! metadata:json
 
+  # Array fields (Go []string/[]int; TEXT[] on postgres, JSON TEXT on sqlite)
+  scaffold gen Post title:string! tags:[]string! scores:[]int
+
   # Add a field to an existing model (kept fields stay; generates ALTER TABLE migration)
   scaffold gen Product stock:int
 
@@ -177,6 +182,13 @@ func runGen(cmd *cobra.Command, args []string) error {
 	if !dryRun {
 		if err := parser.SaveManifest(root, manifest); err != nil {
 			return err
+		}
+		// SSR views are templ components — regenerate the *_templ.go so the
+		// project builds without a separate manual `templ generate` step.
+		if manifest.APIMode == "ssr" {
+			if err := runTemplGenerate(root); err != nil {
+				return err
+			}
 		}
 	}
 

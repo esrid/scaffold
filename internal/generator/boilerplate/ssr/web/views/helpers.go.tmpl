@@ -1,0 +1,35 @@
+package views
+
+import (
+	"fmt"
+	"reflect"
+)
+
+// display renders a field value for templates, dereferencing pointers (nil
+// pointers render as the empty string) and formatting everything else with %v.
+func display(v any) string {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return ""
+	}
+	return fmt.Sprintf("%v", rv.Interface())
+}
+
+// truthy reports whether v is a true bool (dereferencing pointers). Used to
+// decide whether a checkbox should be rendered as checked.
+func truthy(v any) bool {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	return rv.IsValid() && rv.Kind() == reflect.Bool && rv.Bool()
+}

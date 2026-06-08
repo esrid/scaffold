@@ -30,7 +30,8 @@ FILES DELETED
   SSR mode:
     internal/adapters/http/{model}_handler_gen.go
     internal/adapters/http/{model}_handler.go    ← contains your custom handler methods
-    web/templates/{plural}/                      ← entire template directory
+    web/views/{model}.templ                      ← templ components
+    web/views/{model}_templ.go                   ← templ-generated, if "make generate" was run
 
   gRPC mode:
     internal/adapters/grpc/pb/{model}.proto
