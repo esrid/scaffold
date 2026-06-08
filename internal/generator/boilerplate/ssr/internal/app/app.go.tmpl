@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	httpAdapter "{{.Module}}/internal/adapters/http"
@@ -244,17 +245,29 @@ func loadTemplates(env string) (*template.Template, error) {
 
 	tmpl := template.New("")
 
-	// Parse root-level templates (layout, home, etc.)
-	if tmpl, err = tmpl.ParseFS(fsys, "*.html"); err != nil {
-		return nil, fmt.Errorf("parse root templates: %w", err)
-	}
-
-	// Parse model sub-templates (products/list.html, etc.) — optional, may not exist yet.
-	subFiles, _ := fs.Glob(fsys, "*/*.html")
-	if len(subFiles) > 0 {
-		if tmpl, err = tmpl.ParseFS(fsys, "*/*.html"); err != nil {
-			return nil, fmt.Errorf("parse model templates: %w", err)
+	// Register every .html file under its path relative to the templates root
+	// (e.g. "home.html", "products/list.html"). ParseFS/ParseGlob name templates
+	// by base name, which collides across models — every model ships
+	// list.html/form.html/show.html — so handlers that render "products/list.html"
+	// would not find them. Walk and name each template by its full relative path.
+	err = fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
+		if d.IsDir() || !strings.HasSuffix(path, ".html") {
+			return nil
+		}
+		content, readErr := fs.ReadFile(fsys, path)
+		if readErr != nil {
+			return fmt.Errorf("read template %s: %w", path, readErr)
+		}
+		if _, parseErr := tmpl.New(path).Parse(string(content)); parseErr != nil {
+			return fmt.Errorf("parse template %s: %w", path, parseErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load templates: %w", err)
 	}
 
 	return tmpl, nil

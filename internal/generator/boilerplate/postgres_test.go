@@ -57,8 +57,14 @@ func TestPostgres_REST_FullCRUD(t *testing.T) {
 	const module = "github.com/test/pgintegration"
 	const addr = "127.0.0.1:17433"
 
-	if err := boilerplate.Generate(dir, module, "postgres", "rest"); err != nil {
-		t.Fatalf("boilerplate.Generate: %v", err)
+	errGen := boilerplate.Generate(
+		dir,
+		module,
+		"postgres",
+		"rest",
+	)
+	if errGen != nil {
+		t.Fatalf("boilerplate.Generate: %v", errGen)
 	}
 
 	manifest, err := parser.LoadManifest(dir)
@@ -70,7 +76,7 @@ func TestPostgres_REST_FullCRUD(t *testing.T) {
 	manifest.APIMode = "rest"
 
 	fields, _ := parser.ParseFields([]string{"name:string!", "price:float!"})
-	model, _ := parser.BuildModel("Product", fields, manifest, "")
+	model, _ := parser.BuildModel("Product", fields, nil, manifest, "")
 	manifest.Models["Product"] = model.ManifestEntry()
 	if err := parser.SaveManifest(dir, manifest); err != nil {
 		t.Fatalf("SaveManifest: %v", err)
@@ -198,8 +204,14 @@ func TestPostgres_SSR_Compiles(t *testing.T) {
 	dir := t.TempDir()
 	const module = "github.com/test/pgssr"
 
-	if err := boilerplate.Generate(dir, module, "postgres", "ssr"); err != nil {
-		t.Fatalf("boilerplate.Generate: %v", err)
+	errGen := boilerplate.Generate(
+		dir,
+		module,
+		"postgres",
+		"ssr",
+	)
+	if errGen != nil {
+		t.Fatalf("boilerplate.Generate: %v", errGen)
 	}
 
 	manifest, _ := parser.LoadManifest(dir)
@@ -208,7 +220,7 @@ func TestPostgres_SSR_Compiles(t *testing.T) {
 	manifest.APIMode = "ssr"
 
 	fields, _ := parser.ParseFields([]string{"title:string!", "content:string!", "published:bool!"})
-	model, _ := parser.BuildModel("Article", fields, manifest, "")
+	model, _ := parser.BuildModel("Article", fields, nil, manifest, "")
 	manifest.Models["Article"] = model.ManifestEntry()
 	parser.SaveManifest(dir, manifest)
 

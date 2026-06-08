@@ -10,7 +10,8 @@ import (
 // templateField is the field view passed to templates.
 type templateField struct {
 	Name         string // snake_case column name
-	GoName       string // PascalCase Go field name
+	GoName       string // PascalCase Go field name (idiomatic, acronym-aware: sku -> SKU)
+	ProtoGoName  string // Go name as protoc-gen-go derives it from the proto field (sku -> Sku)
 	GoType       string // e.g. "string", "*string", "time.Time"
 	SQLType      string
 	NotNull      bool
@@ -95,6 +96,7 @@ type grpcHandlerCtx struct {
 	Name       string
 	Lower      string
 	Fields     []templateField
+	NeedsTime  bool // true when a nullable time field needs the "time" import
 }
 
 // migrationCtx is shared by migration templates.
@@ -120,6 +122,7 @@ func buildTemplateFields(fields []parser.Field, db string) []templateField {
 		out[i] = templateField{
 			Name:         f.Name,
 			GoName:       toPascalCase(f.Name),
+			ProtoGoName:  protoGoCamelCase(f.Name),
 			GoType:       f.GoType,
 			SQLType:      sqlType,
 			NotNull:      f.NotNull,
@@ -395,3 +398,39 @@ func toPascalCase(s string) string {
 	}
 	return b.String()
 }
+
+// protoGoCamelCase mirrors protoc-gen-go's strs.GoCamelCase so generated gRPC
+// code references the exact field/getter names the protobuf compiler emits.
+// Unlike toPascalCase it is NOT acronym-aware: "sku" -> "Sku", "user_id" -> "UserId".
+// Keep this in sync with google.golang.org/protobuf/internal/strs.GoCamelCase.
+func protoGoCamelCase(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '.' && i+1 < len(s) && isASCIILower(s[i+1]):
+			// Skip over '.' in ".{{lowercase}}".
+		case c == '.':
+			b = append(b, '_') // convert '.' to '_'
+		case c == '_' && (i == 0 || s[i-1] == '.'):
+			b = append(b, 'X') // convert leading '_' to "X"
+		case c == '_' && i+1 < len(s) && isASCIILower(s[i+1]):
+			// Skip over '_' in "_{{lowercase}}".
+		case isASCIIDigit(c):
+			b = append(b, c)
+		default:
+			if isASCIILower(c) {
+				c -= 'a' - 'A' // uppercase the first letter of the word
+			}
+			b = append(b, c)
+			// Append the rest of the lowercase run as-is.
+			for ; i+1 < len(s) && isASCIILower(s[i+1]); i++ {
+				b = append(b, s[i+1])
+			}
+		}
+	}
+	return string(b)
+}
+
+func isASCIILower(c byte) bool { return 'a' <= c && c <= 'z' }
+func isASCIIDigit(c byte) bool { return '0' <= c && c <= '9' }

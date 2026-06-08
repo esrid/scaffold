@@ -9,59 +9,71 @@ import (
 // ---- Manifest mode helpers ----
 
 func TestManifest_IsSSR(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
-		mode   string
-		want   bool
+		name string
+		mode string
+		want bool
 	}{
-		{"ssr", true},
-		{"rest", false},
-		{"grpc", false},
-		{"", false},
+		{"ssr mode", "ssr", true},
+		{"rest mode", "rest", false},
+		{"grpc mode", "grpc", false},
+		{"empty mode", "", false},
 	}
 	for _, c := range cases {
-		m := &Manifest{APIMode: c.mode}
-		if got := m.IsSSR(); got != c.want {
-			t.Errorf("APIMode=%q: IsSSR()=%v want %v", c.mode, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			m := &Manifest{APIMode: c.mode}
+			if got := m.IsSSR(); got != c.want {
+				t.Errorf("IsSSR()=%v want %v", got, c.want)
+			}
+		})
 	}
 }
 
 func TestManifest_IsREST(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
+		name string
 		mode string
 		grpc bool
 		want bool
 	}{
-		{"rest", false, true},
-		{"", false, true},     // empty defaults to REST
-		{"ssr", false, false},
-		{"grpc", false, false},
-		{"", true, false},     // legacy GRPC flag overrides empty
+		{"rest mode", "rest", false, true},
+		{"empty mode defaults to rest", "", false, true},
+		{"ssr mode", "ssr", false, false},
+		{"grpc mode", "grpc", false, false},
+		{"legacy grpc overrides empty", "", true, false},
 	}
 	for _, c := range cases {
-		m := &Manifest{APIMode: c.mode, GRPC: c.grpc}
-		if got := m.IsREST(); got != c.want {
-			t.Errorf("APIMode=%q GRPC=%v: IsREST()=%v want %v", c.mode, c.grpc, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			m := &Manifest{APIMode: c.mode, GRPC: c.grpc}
+			if got := m.IsREST(); got != c.want {
+				t.Errorf("IsREST()=%v want %v", got, c.want)
+			}
+		})
 	}
 }
 
 func TestManifest_IsGRPC(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
+		name string
 		mode string
 		grpc bool
 		want bool
 	}{
-		{"grpc", false, true},
-		{"", true, true},      // legacy --grpc flag
-		{"rest", false, false},
-		{"ssr", false, false},
+		{"grpc mode", "grpc", false, true},
+		{"legacy grpc flag", "", true, true},
+		{"rest mode", "rest", false, false},
+		{"ssr mode", "ssr", false, false},
 	}
 	for _, c := range cases {
-		m := &Manifest{APIMode: c.mode, GRPC: c.grpc}
-		if got := m.IsGRPC(); got != c.want {
-			t.Errorf("APIMode=%q GRPC=%v: IsGRPC()=%v want %v", c.mode, c.grpc, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			m := &Manifest{APIMode: c.mode, GRPC: c.grpc}
+			if got := m.IsGRPC(); got != c.want {
+				t.Errorf("IsGRPC()=%v want %v", got, c.want)
+			}
+		})
 	}
 }
 
@@ -147,7 +159,13 @@ func TestSaveManifest_CreatesDirectory(t *testing.T) {
 func TestBuildModel_NewModel(t *testing.T) {
 	manifest := &Manifest{DB: "sqlite", Models: map[string]ManifestModel{}}
 	fields, _ := ParseFields([]string{"name:string!", "price:float!"})
-	model, err := BuildModel("Product", fields, manifest, "")
+	model, err := BuildModel(
+		"Product",
+		fields,
+		nil,
+		manifest,
+		"",
+	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
@@ -176,7 +194,13 @@ func TestBuildModel_ExistingModel(t *testing.T) {
 		},
 	}
 	fields, _ := ParseFields([]string{"name:string!", "price:float!"})
-	model, err := BuildModel("Product", fields, manifest, "")
+	model, err := BuildModel(
+		"Product",
+		fields,
+		nil,
+		manifest,
+		"",
+	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
@@ -191,10 +215,45 @@ func TestBuildModel_ExistingModel(t *testing.T) {
 	}
 }
 
+func TestBuildModel_ExistingModel_NoFieldsPreserved(t *testing.T) {
+	manifest := &Manifest{
+		DB: "sqlite",
+		Models: map[string]ManifestModel{
+			"Product": {
+				TableName:        "products",
+				MigrationVersion: 3,
+				Fields: []ManifestField{
+					{Name: "name", GoType: "string", NotNull: true},
+				},
+			},
+		},
+	}
+	model, err := BuildModel(
+		"Product",
+		nil,
+		nil,
+		manifest,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	if len(model.Fields) != 1 || model.Fields[0].Name != "name" {
+		t.Errorf("expected fields to be preserved, got: %v", model.Fields)
+	}
+}
+
+
 func TestBuildModel_TableNameOverride(t *testing.T) {
 	manifest := &Manifest{Models: map[string]ManifestModel{}}
 	fields, _ := ParseFields([]string{"name:string!"})
-	model, err := BuildModel("Person", fields, manifest, "people")
+	model, err := BuildModel(
+		"Person",
+		fields,
+		nil,
+		manifest,
+		"people",
+	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
@@ -206,7 +265,13 @@ func TestBuildModel_TableNameOverride(t *testing.T) {
 func TestBuildModel_RejectsReservedName(t *testing.T) {
 	manifest := &Manifest{Models: map[string]ManifestModel{}}
 	fields, _ := ParseFields([]string{"name:string!"})
-	_, err := BuildModel("type", fields, manifest, "")
+	_, err := BuildModel(
+		"type",
+		fields,
+		nil,
+		manifest,
+		"",
+	)
 	if err == nil {
 		t.Error("expected error for reserved Go keyword model name")
 	}
@@ -214,7 +279,13 @@ func TestBuildModel_RejectsReservedName(t *testing.T) {
 
 func TestBuildModel_RejectsLowercaseName(t *testing.T) {
 	manifest := &Manifest{Models: map[string]ManifestModel{}}
-	_, err := BuildModel("product", nil, manifest, "")
+	_, err := BuildModel(
+		"product",
+		nil,
+		nil,
+		manifest,
+		"",
+	)
 	if err == nil {
 		t.Error("expected error for lowercase model name")
 	}
@@ -233,9 +304,16 @@ func TestDiffFields_AddedAndRemoved(t *testing.T) {
 			},
 		},
 	}
-	// Add "views", remove "body"
-	fields, _ := ParseFields([]string{"title:string!", "views:int!"})
-	model, err := BuildModel("Article", fields, manifest, "articles")
+	// Add "views" (merged in), remove "body" via explicit --remove.
+	// "title" is not re-listed but must be preserved under merge semantics.
+	fields, _ := ParseFields([]string{"views:int!"})
+	model, err := BuildModel(
+		"Article",
+		fields,
+		[]string{"body"},
+		manifest,
+		"articles",
+	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
@@ -255,7 +333,13 @@ func TestDiffFields_NoChange(t *testing.T) {
 		},
 	}
 	fields, _ := ParseFields([]string{"name:string!"})
-	model, _ := BuildModel("Tag", fields, manifest, "tags")
+	model, _ := BuildModel(
+		"Tag",
+		fields,
+		nil,
+		manifest,
+		"tags",
+	)
 	added, removed := model.DiffFields()
 	if len(added) != 0 || len(removed) != 0 {
 		t.Errorf("expected no diff, got added=%v removed=%v", added, removed)
@@ -342,3 +426,69 @@ func TestParseFields_CascadeRequiresFK(t *testing.T) {
 		t.Error("expected error: cascade without fk")
 	}
 }
+
+func TestBuildModel_NewModel_NoFieldsErrors(t *testing.T) {
+	manifest := &Manifest{DB: "sqlite", Models: map[string]ManifestModel{}}
+	_, err := BuildModel(
+		"Product",
+		nil,
+		nil,
+		manifest,
+		"",
+	)
+	if err == nil {
+		t.Error("expected error when building a new model with no fields")
+	}
+}
+
+func TestBuildModel_InvalidModelNameCharacters(t *testing.T) {
+	manifest := &Manifest{Models: map[string]ManifestModel{}}
+	fields, _ := ParseFields([]string{"name:string!"})
+	_, err := BuildModel(
+		"Prod-uct",
+		fields,
+		nil,
+		manifest,
+		"",
+	)
+	if err == nil {
+		t.Error("expected error for model name with invalid hyphen character")
+	}
+}
+
+func TestBuildModel_MigrationVersionShouldBeGloballyUnique(t *testing.T) {
+	manifest := &Manifest{
+		DB: "sqlite",
+		Models: map[string]ManifestModel{
+			"Product": {
+				TableName:        "products",
+				MigrationVersion: 2,
+				Fields: []ManifestField{
+					{Name: "name", GoType: "string", NotNull: true},
+				},
+			},
+			"Category": {
+				TableName:        "categories",
+				MigrationVersion: 5,
+				Fields: []ManifestField{
+					{Name: "name", GoType: "string", NotNull: true},
+				},
+			},
+		},
+	}
+	fields, _ := ParseFields([]string{"name:string!", "price:float!"})
+	model, err := BuildModel(
+		"Product",
+		fields,
+		nil,
+		manifest,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	if model.MigrationVersion <= 5 {
+		t.Errorf("expected migration version to be globally unique (greater than 5), got %d", model.MigrationVersion)
+	}
+}
+

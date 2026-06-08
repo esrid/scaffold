@@ -102,3 +102,21 @@ func TestParseField_cascade_and_setnull_errors(t *testing.T) {
 		t.Error("expected error: cascade and setnull are mutually exclusive")
 	}
 }
+
+func TestParseField_invalid_field_name_errors(t *testing.T) {
+	invalidNames := []string{"my-field:string", "1field:string", "field name:string"}
+	for _, in := range invalidNames {
+		_, err := ParseFields([]string{in})
+		if err == nil {
+			t.Errorf("expected error for invalid field name %q", in)
+		}
+	}
+}
+
+func TestParseField_unknown_modifier_errors(t *testing.T) {
+	_, err := ParseFields([]string{"name:string{cascad}"})
+	if err == nil {
+		t.Error("expected error for unknown modifier 'cascad'")
+	}
+}
+

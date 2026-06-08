@@ -11,7 +11,9 @@ import (
 	"text/template"
 )
 
-//go:embed static sqlite postgres grpc rest ssr
+// The all: prefix is required so dotfiles (e.g. static/.env.example.tmpl) are
+// embedded — a bare //go:embed pattern silently skips names starting with "." or "_".
+//go:embed all:static all:sqlite all:postgres all:grpc all:rest all:ssr
 var files embed.FS
 
 // BoilerplateData is passed to all .tmpl files during rendering.

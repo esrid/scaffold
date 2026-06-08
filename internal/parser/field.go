@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Field represents a parsed model field from CLI args.
@@ -122,8 +123,16 @@ func parseField(arg string) (Field, error) {
 				return Field{}, fmt.Errorf("field %q: size modifier must be positive", name)
 			}
 			varcharLen = n
-		default:
+		case m == "unique" || m == "index" || m == "cascade" || m == "setnull":
 			filtered = append(filtered, m)
+		case strings.HasPrefix(m, "default="):
+			filtered = append(filtered, m)
+		case strings.HasPrefix(m, "fk="):
+			filtered = append(filtered, m)
+		case strings.HasPrefix(m, "check="):
+			filtered = append(filtered, m)
+		default:
+			return Field{}, fmt.Errorf("field %q: unknown modifier %q", name, m)
 		}
 	}
 	if varcharLen > 0 {
@@ -168,14 +177,22 @@ func parseField(arg string) (Field, error) {
 }
 
 func validateFieldName(name string) error {
+	if name == "" {
+		return fmt.Errorf("field name cannot be empty")
+	}
 	if autoManagedFields[name] {
 		return fmt.Errorf("field %q is auto-managed (id, created_at, updated_at) — remove it", name)
 	}
 	if goKeywords[name] {
 		return fmt.Errorf("field %q is a reserved Go keyword", name)
 	}
-	if name == "" {
-		return fmt.Errorf("field name cannot be empty")
+	if !unicode.IsLetter(rune(name[0])) && rune(name[0]) != '_' {
+		return fmt.Errorf("field %q must start with a letter or underscore", name)
+	}
+	for _, r := range name {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			return fmt.Errorf("field %q must contain only alphanumeric characters and underscores", name)
+		}
 	}
 	return nil
 }

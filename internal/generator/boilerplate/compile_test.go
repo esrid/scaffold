@@ -40,8 +40,14 @@ func initAndBuild(t *testing.T, db, apiMode string, models []modelDef) string {
 	dir := t.TempDir()
 	const module = "github.com/test/compilechk"
 
-	if err := boilerplate.Generate(dir, module, db, apiMode); err != nil {
-		t.Fatalf("boilerplate.Generate: %v", err)
+	errGen := boilerplate.Generate(
+		dir,
+		module,
+		db,
+		apiMode,
+	)
+	if errGen != nil {
+		t.Fatalf("boilerplate.Generate: %v", errGen)
 	}
 
 	manifest, err := scaffoldparser.LoadManifest(dir)
@@ -57,7 +63,7 @@ func initAndBuild(t *testing.T, db, apiMode string, models []modelDef) string {
 		if err != nil {
 			t.Fatalf("ParseFields(%v): %v", md.fields, err)
 		}
-		model, err := scaffoldparser.BuildModel(md.name, fields, manifest, "")
+		model, err := scaffoldparser.BuildModel(md.name, fields, nil, manifest, "")
 		if err != nil {
 			t.Fatalf("BuildModel(%s): %v", md.name, err)
 		}

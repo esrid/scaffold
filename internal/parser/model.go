@@ -26,7 +26,13 @@ var pluralizeClient = pluralize.NewClient()
 
 // BuildModel validates the model name, resolves the table name,
 // and determines CREATE vs UPDATE mode from the manifest.
-func BuildModel(name string, fields []Field, manifest *Manifest, tableName string) (*Model, error) {
+//
+// For an existing model, fields are MERGED into the stored set: a passed field
+// whose name already exists updates that field in place, a new name is appended,
+// and any field whose name appears in removeFields is dropped. Fields that are
+// neither passed nor removed are preserved — passing a subset never silently
+// drops columns.
+func BuildModel(name string, fields []Field, removeFields []string, manifest *Manifest, tableName string) (*Model, error) {
 	if err := validateModelName(name); err != nil {
 		return nil, err
 	}
@@ -37,7 +43,6 @@ func BuildModel(name string, fields []Field, manifest *Manifest, tableName strin
 
 	m := &Model{
 		Name:      name,
-		Fields:    fields,
 		TableName: tableName,
 	}
 
@@ -45,13 +50,83 @@ func BuildModel(name string, fields []Field, manifest *Manifest, tableName strin
 	if exists {
 		m.IsNew = false
 		m.PrevFields = manifestFieldsToFields(existing.Fields)
-		m.MigrationVersion = existing.MigrationVersion + 1
+		merged, err := mergeFields(m.PrevFields, fields, removeFields)
+		if err != nil {
+			return nil, err
+		}
+		m.Fields = merged
+		added, removed := m.DiffFields()
+		if len(added) > 0 || len(removed) > 0 {
+			m.MigrationVersion = nextMigrationVersion(manifest)
+		} else {
+			m.MigrationVersion = existing.MigrationVersion
+		}
 	} else {
+		if len(removeFields) > 0 {
+			return nil, fmt.Errorf("cannot use --remove on new model %q", name)
+		}
 		m.IsNew = true
+		if len(fields) == 0 {
+			return nil, fmt.Errorf("new model %q requires at least one field", name)
+		}
+		m.Fields = fields
 		m.MigrationVersion = nextMigrationVersion(manifest)
 	}
 
 	return m, nil
+}
+
+// mergeFields merges passed fields and removals into the previous field set.
+// Existing fields keep their order; updated fields are replaced in place; new
+// fields are appended; removed fields are dropped. The result must be non-empty.
+func mergeFields(prev, passed []Field, removeFields []string) ([]Field, error) {
+	remove := map[string]bool{}
+	for _, name := range removeFields {
+		remove[name] = true
+	}
+
+	// Index passed fields by name for in-place updates.
+	updates := map[string]Field{}
+	var appends []Field
+	prevByName := map[string]bool{}
+	for _, f := range prev {
+		prevByName[f.Name] = true
+	}
+	for _, f := range passed {
+		if remove[f.Name] {
+			return nil, fmt.Errorf("field %q is given both as an update and to --remove", f.Name)
+		}
+		if prevByName[f.Name] {
+			updates[f.Name] = f
+		} else {
+			appends = append(appends, f)
+		}
+	}
+
+	// Verify every removal targets an existing field.
+	for _, name := range removeFields {
+		if !prevByName[name] {
+			return nil, fmt.Errorf("cannot remove field %q: not present on this model", name)
+		}
+	}
+
+	merged := make([]Field, 0, len(prev)+len(appends))
+	for _, f := range prev {
+		if remove[f.Name] {
+			continue
+		}
+		if upd, ok := updates[f.Name]; ok {
+			merged = append(merged, upd)
+		} else {
+			merged = append(merged, f)
+		}
+	}
+	merged = append(merged, appends...)
+
+	if len(merged) == 0 {
+		return nil, fmt.Errorf("model would have no fields left after removals")
+	}
+	return merged, nil
 }
 
 // ModelFromEntry rebuilds a Model from a manifest entry (used by destroy).
@@ -137,6 +212,11 @@ func validateModelName(name string) error {
 	}
 	if !unicode.IsUpper(rune(name[0])) {
 		return fmt.Errorf("model name %q must start with an uppercase letter", name)
+	}
+	for _, r := range name {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			return fmt.Errorf("model name %q must contain only alphanumeric characters and underscores", name)
+		}
 	}
 	if goKeywords[strings.ToLower(name)] {
 		return fmt.Errorf("model name %q is a reserved Go keyword", name)

@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	dryRun    bool
-	tableName string
+	dryRun       bool
+	tableName    string
+	removeFields []string
 )
 
 var genCmd = &cobra.Command{
@@ -20,8 +21,10 @@ var genCmd = &cobra.Command{
 	Long: `Generate or update the full CRUD scaffold for a model.
 
 Must be run from inside a project created by "scaffold init" (looks for .scaffold/models.json).
-Running gen again on an existing model adds/removes fields and writes a diff migration.
-Routes are mounted automatically in app.go.
+Running gen again on an existing model MERGES the fields you pass into the stored set:
+a name that already exists is updated in place, a new name is added, and fields you do
+not mention are kept (passing a subset never drops columns). Use --remove to drop a field.
+Each change writes a diff migration. Routes are mounted automatically in app.go.
 
 FIELD SYNTAX
   field:type            nullable field (Go pointer, e.g. *string)
@@ -111,8 +114,11 @@ EXAMPLES
   # JSON field (JSONB on postgres, TEXT on sqlite)
   scaffold gen Event payload:json! metadata:json
 
-  # Add a field to an existing model (generates ALTER TABLE migration)
-  scaffold gen Product name:string! price:float! sku:string{unique} stock:int
+  # Add a field to an existing model (kept fields stay; generates ALTER TABLE migration)
+  scaffold gen Product stock:int
+
+  # Drop a field from an existing model (generates DROP COLUMN migration)
+  scaffold gen Product --remove stock
 
   # Preview changes without writing any files
   scaffold gen Product name:string! price:float! --dry-run
@@ -126,6 +132,7 @@ EXAMPLES
 func init() {
 	genCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
 	genCmd.Flags().StringVar(&tableName, "table-name", "", "Override auto-pluralized table name")
+	genCmd.Flags().StringSliceVar(&removeFields, "remove", nil, "Field name(s) to drop from an existing model (comma-separated or repeated)")
 	rootCmd.AddCommand(genCmd)
 }
 
@@ -153,7 +160,7 @@ func runGen(cmd *cobra.Command, args []string) error {
 	}
 	manifest.Module = modulePath
 
-	model, err := parser.BuildModel(modelName, fields, manifest, tableName)
+	model, err := parser.BuildModel(modelName, fields, removeFields, manifest, tableName)
 	if err != nil {
 		return err
 	}
