@@ -245,9 +245,9 @@ func TestScaffold_SSR_Handler_BindForm_AllScalarTypes(t *testing.T) {
 	assertContains(t, handler, `r.FormValue("active") == "on"`, "bool bind")
 
 	// Nullable (pointer) fields
-	assertContains(t, handler, `r.FormValue("label"); v != ""`, "nullable string bind")
-	assertContains(t, handler, `strconv.Atoi(r.FormValue("qty"))`, "nullable int bind")
-	assertContains(t, handler, `strconv.ParseFloat(r.FormValue("rate")`, "nullable float bind")
+	assertContains(t, handler, `r.Form["label"]`, "nullable string bind")
+	assertContains(t, handler, `strconv.Atoi(val[0])`, "nullable int bind")
+	assertContains(t, handler, `strconv.ParseFloat(val[0], 64)`, "nullable float bind")
 
 	assertGoSyntax(t, handler, "thing_handler_gen.go")
 }
@@ -559,3 +559,45 @@ func TestScaffold_Migration_CreatedForNewModel(t *testing.T) {
 
 	assertExists(t, root, "internal/adapters/store/migrations/00002_create_labels.sql")
 }
+
+func TestScaffold_StructPacking(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+	model := genModel(t, manifest, "Product", "active:bool!", "qty:int!", "name:string!")
+	runScaffold(t, root, manifest, model)
+
+	domain := assertExists(t, root, "internal/core/domain/product.go")
+
+	startIdx := strings.Index(domain, "// scaffold:fields:start")
+	endIdx := strings.Index(domain, "// scaffold:fields:end")
+	if startIdx == -1 || endIdx == -1 {
+		t.Fatalf("could not find scaffold:fields markers")
+	}
+	fieldsBlock := domain[startIdx:endIdx]
+
+	// Verify that the fields in the struct are sorted by size descending (Struct Packing)
+	// with alphabetical tie-breakers.
+	// Sizes: CreatedAt (24), UpdatedAt (24), ID (16), Name (16), Qty (8), Active (1)
+	expectedOrder := []string{
+		"CreatedAt",
+		"UpdatedAt",
+		"ID",
+		"Name",
+		"Qty",
+		"Active",
+	}
+
+	for i := 0; i < len(expectedOrder)-1; i++ {
+		idx1 := strings.Index(fieldsBlock, expectedOrder[i])
+		idx2 := strings.Index(fieldsBlock, expectedOrder[i+1])
+		if idx1 == -1 {
+			t.Errorf("expected to find %q in domain struct fields block", expectedOrder[i])
+		}
+		if idx2 == -1 {
+			t.Errorf("expected to find %q in domain struct fields block", expectedOrder[i+1])
+		}
+		if idx1 > idx2 {
+			t.Errorf("field %q (index %d) should come before %q (index %d) in domain struct fields block", expectedOrder[i], idx1, expectedOrder[i+1], idx2)
+		}
+	}
+}
+

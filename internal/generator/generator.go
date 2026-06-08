@@ -1049,27 +1049,62 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+func goTypeSize(goType string) int {
+	if strings.HasPrefix(goType, "[]") {
+		return 24
+	}
+	if strings.HasPrefix(goType, "*") {
+		return 8
+	}
+	switch goType {
+	case "time.Time":
+		return 24
+	case "string":
+		return 16
+	case "int", "int64", "float64":
+		return 8
+	case "json.RawMessage":
+		return 24
+	case "bool":
+		return 1
+	default:
+		return 8
+	}
+}
+
 func buildFieldLines(fields []templateField, db string) string {
+	allFields := make([]templateField, len(fields), len(fields)+3)
+	copy(allFields, fields)
+
+	// System fields are always present.
+	allFields = append(allFields,
+		templateField{GoName: "ID", GoType: "string", Name: "id"},
+		templateField{GoName: "CreatedAt", GoType: "time.Time", Name: "created_at"},
+		templateField{GoName: "UpdatedAt", GoType: "time.Time", Name: "updated_at"},
+	)
+
+	// Sort fields from largest to smallest size to optimize memory alignment / struct packing.
+	// In case of size ties, sort alphabetically by GoName to be deterministic.
+	sort.Slice(allFields, func(i, j int) bool {
+		sizeI := goTypeSize(allFields[i].GoType)
+		sizeJ := goTypeSize(allFields[j].GoType)
+		if sizeI != sizeJ {
+			return sizeI > sizeJ
+		}
+		return allFields[i].GoName < allFields[j].GoName
+	})
+
 	var b strings.Builder
-	for _, f := range fields {
+	for _, f := range allFields {
 		if db == "postgres" {
 			b.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\" db:\"%s\"`\n", f.GoName, f.GoType, f.Name, f.Name))
 		} else {
 			b.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", f.GoName, f.GoType, f.Name))
 		}
 	}
-	// System fields are always present.
-	if db == "postgres" {
-		b.WriteString("\tID        string    `json:\"id\" db:\"id\"`\n")
-		b.WriteString("\tCreatedAt time.Time `json:\"created_at\" db:\"created_at\"`\n")
-		b.WriteString("\tUpdatedAt time.Time `json:\"updated_at\" db:\"updated_at\"`\n")
-	} else {
-		b.WriteString("\tID        string    `json:\"id\"`\n")
-		b.WriteString("\tCreatedAt time.Time `json:\"created_at\"`\n")
-		b.WriteString("\tUpdatedAt time.Time `json:\"updated_at\"`\n")
-	}
 	return b.String()
 }
+
 
 func buildMigrationCtx(model *parser.Model, added, removed []parser.Field, db string) migrationCtx {
 	var idDef string

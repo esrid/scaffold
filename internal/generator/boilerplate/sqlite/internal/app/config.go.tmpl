@@ -7,28 +7,30 @@ import (
 )
 
 type Config struct {
-	DatabaseURL string
-	SecretKey   string
-	Addr        string
+	DatabaseURL    string
+	SecretKey      string
+	Addr           string
 	{{- if .GRPC}}
-	GRPCAddr    string
+	GRPCAddr       string
 	{{- end}}
-	BaseURL     string
-	LogLevel    string
-	Env         string
+	BaseURL        string
+	LogLevel       string
+	Env            string
+	AllowedOrigins string
 }
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
-		DatabaseURL: env("DATABASE_URL", "file:app.db?_journal_mode=WAL&_foreign_keys=on"),
-		SecretKey:   os.Getenv("SECRET_KEY"),
-		Addr:        env("ADDR", ":8080"),
+		DatabaseURL:    env("DATABASE_URL", "file:app.db?_journal_mode=WAL&_foreign_keys=on"),
+		SecretKey:      os.Getenv("SECRET_KEY"),
+		Addr:           env("ADDR", ":8080"),
 		{{- if .GRPC}}
-		GRPCAddr:    env("GRPC_ADDR", ":50051"),
+		GRPCAddr:       env("GRPC_ADDR", ":50051"),
 		{{- end}}
-		BaseURL:     env("BASE_URL", "http://localhost:8080"),
-		LogLevel:    env("LOG_LEVEL", "info"),
-		Env:         env("APP_ENV", "development"),
+		BaseURL:        env("BASE_URL", "http://localhost:8080"),
+		LogLevel:       env("LOG_LEVEL", "info"),
+		Env:            env("APP_ENV", "development"),
+		AllowedOrigins: env("ALLOWED_ORIGINS", "*"),
 	}
 
 	if cfg.SecretKey == "" {

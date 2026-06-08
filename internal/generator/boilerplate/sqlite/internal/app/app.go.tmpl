@@ -60,6 +60,9 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	// serverErr receives the first fatal error from either server so a crash
+	// triggers graceful shutdown instead of hanging until a signal.
+	serverErr := make(chan error, 2)
 	{{- if .GRPC}}
 	grpcLn, err := net.Listen("tcp", a.cfg.GRPCAddr)
 	if err != nil {
@@ -76,7 +79,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.logger.Info("gRPC Server listening", "addr", a.cfg.GRPCAddr)
 	go func() {
 		if err := a.grpcServer.Serve(grpcLn); err != nil {
-			a.logger.Error("gRPC server crashed", "err", err)
+			serverErr <- fmt.Errorf("gRPC server failed: %w", err)
 		}
 	}()
 	{{- end}}
@@ -100,12 +103,20 @@ func (a *App) Run(ctx context.Context) error {
 	a.logger.Info("HTTP Server listening", "addr", ln.Addr().String(), "log_level", a.cfg.LogLevel)
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			a.logger.Error("server crashed", "err", err)
+			serverErr <- fmt.Errorf("HTTP server failed: %w", err)
 		}
 	}()
 
-	<-ctx.Done()
-	return a.shutdown(srv)
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case runErr = <-serverErr:
+		a.logger.Error("server crashed, shutting down", "err", runErr)
+	}
+	if err := a.shutdown(srv); err != nil {
+		return err
+	}
+	return runErr
 }
 
 func (a *App) buildRouter() *chi.Mux {
@@ -118,7 +129,7 @@ func (a *App) buildRouter() *chi.Mux {
 func (a *App) mountMiddlewares(r *chi.Mux) {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.CleanPath)
-	r.Use(httpAdapter.CORS())
+	r.Use(httpAdapter.CORS(a.cfg.AllowedOrigins))
 	r.Use(httpAdapter.StructuredLogger(a.logger))
 	r.Use(httpAdapter.StructuredRecoverer(a.logger))
 	r.Use(middleware.Timeout(60 * time.Second))

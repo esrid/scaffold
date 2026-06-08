@@ -29,7 +29,7 @@ type templateField struct {
 type domainCtx struct {
 	Name            string
 	Receiver        string
-	Fields          []templateField
+	FieldsBlock     string
 	NeedsTimeImport bool
 	NeedsJSONImport bool
 }
@@ -280,7 +280,7 @@ func buildDomainCtx(model *parser.Model, modulePath string, db string) domainCtx
 	return domainCtx{
 		Name:            model.Name,
 		Receiver:        model.Receiver(),
-		Fields:          fields,
+		FieldsBlock:     buildFieldLines(fields, db),
 		NeedsTimeImport: needsTime,
 		NeedsJSONImport: needsJSON,
 	}

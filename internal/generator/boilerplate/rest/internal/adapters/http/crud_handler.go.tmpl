@@ -169,6 +169,9 @@ func respondError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	// Never echo the raw error to the client: it may leak SQL, file paths, or
+	// internal context. Log it server-side and return an opaque message.
+	slog.Error("unhandled error in HTTP handler", "err", err)
 	w.WriteHeader(http.StatusInternalServerError)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_server_error"})
 }
