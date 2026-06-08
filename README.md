@@ -94,6 +94,7 @@ name:type              nullable field (Go pointer, e.g. *string)
 name:type!             NOT NULL field
 name:type{mod}         field with modifier
 name:type{mod,mod}!    multiple modifiers, NOT NULL
+name:[]type            array field (Go slice, e.g. []string)
 ```
 
 `!` and `nn` are equivalent.
@@ -115,8 +116,14 @@ name:type{mod,mod}!    multiple modifiers, NOT NULL
 | `bool` | `bool` | `INTEGER` | `BOOLEAN` |
 | `time`, `datetime` | `time.Time` | `DATETIME` | `TIMESTAMPTZ` |
 | `json` | `json.RawMessage` | `TEXT` | `JSONB` |
+| `[]<type>` | Go slice (e.g. `[]string`) | JSON-encoded `TEXT` | native array (e.g. `TEXT[]`) |
 
 `id`, `created_at`, `updated_at` are auto-managed — do not declare them.
+
+**Array fields** use the `[]<type>` prefix (e.g. `tags:[]string!`, `scores:[]int`).
+Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool`
+(not `time` or `json`). Stored as a native array on Postgres and a JSON-encoded
+`TEXT` column on SQLite.
 
 #### Modifiers
 
@@ -141,6 +148,7 @@ scaffold gen Order status:string{default=pending,nn}
 scaffold gen User username:string{92}! email:string{255,unique}!
 scaffold gen Post user_id:string{fk=users,cascade,index}! title:string!
 scaffold gen Event payload:json! metadata:json
+scaffold gen Post title:string! tags:[]string! scores:[]int  # array fields (TEXT[] on postgres, JSON TEXT on sqlite)
 scaffold gen Product stock:int                             # add stock to an existing model (name, price kept)
 scaffold gen Product --remove stock                        # drop the stock column
 scaffold gen Product name:string! price:float! --dry-run
