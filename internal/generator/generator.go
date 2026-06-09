@@ -220,12 +220,15 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 		viewGen := filepath.Join("web", "views", model.Snake()+"_templ.go")
 		for _, rel := range []string{viewSrc, viewGen} {
 			abs := filepath.Join(g.root, rel)
+			existed := fileExists(abs)
 			if !g.dryRun {
 				if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
 					return nil, fmt.Errorf("destroy: remove %s: %w", rel, err)
 				}
 			}
-			res.Deleted = append(res.Deleted, rel)
+			if existed {
+				res.Deleted = append(res.Deleted, rel)
+			}
 		}
 	}
 	if !model.NoHandler && g.isGRPC() {
@@ -562,6 +565,7 @@ func (g *Generator) writeSQLFile(rel, tmplStr string, data any, res *Result) err
 		return fmt.Errorf("%s: %w", rel, err)
 	}
 
+	existed := fileExists(abs)
 	g.recordDiff(rel, []byte(content), res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
@@ -571,7 +575,11 @@ func (g *Generator) writeSQLFile(rel, tmplStr string, data any, res *Result) err
 			return err
 		}
 	}
-	res.Created = append(res.Created, rel)
+	if existed {
+		res.Overwritten = append(res.Overwritten, rel)
+	} else {
+		res.Created = append(res.Created, rel)
+	}
 	return nil
 }
 
@@ -603,7 +611,11 @@ func (g *Generator) addSchemaBlock(model *parser.Model, res *Result) error {
 func (g *Generator) replaceSchemaBlock(model *parser.Model, res *Result) error {
 	schemaPath := filepath.Join(g.root, "internal", "adapters", "store", "schema.sql")
 	data, err := os.ReadFile(schemaPath)
-	if err != nil {
+	if os.IsNotExist(err) {
+		// Legacy project without a schema.sql — fall back to creating it with
+		// just this model's block instead of failing the whole update.
+		data = nil
+	} else if err != nil {
 		return fmt.Errorf("schema.sql: %w", err)
 	}
 
@@ -733,6 +745,7 @@ func (g *Generator) writeProto(rel string, model *parser.Model, res *Result) err
 	if err != nil {
 		return fmt.Errorf("%s: %w", rel, err)
 	}
+	existed := fileExists(abs)
 	g.recordDiff(rel, []byte(content), res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
@@ -742,7 +755,7 @@ func (g *Generator) writeProto(rel string, model *parser.Model, res *Result) err
 			return fmt.Errorf("write %s: %w", rel, err)
 		}
 	}
-	if fileExists(abs) {
+	if existed {
 		res.Overwritten = append(res.Overwritten, rel)
 	} else {
 		res.Created = append(res.Created, rel)
@@ -775,6 +788,7 @@ func (g *Generator) writeGRPCHandler(rel string, model *parser.Model, res *Resul
 		return fmt.Errorf("%s: %w", rel, err)
 	}
 	abs := filepath.Join(g.root, rel)
+	existed := fileExists(abs)
 	g.recordDiff(rel, formatted, res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
@@ -784,7 +798,7 @@ func (g *Generator) writeGRPCHandler(rel string, model *parser.Model, res *Resul
 			return fmt.Errorf("write %s: %w", rel, err)
 		}
 	}
-	if fileExists(abs) {
+	if existed {
 		res.Overwritten = append(res.Overwritten, rel)
 	} else {
 		res.Created = append(res.Created, rel)
@@ -823,14 +837,19 @@ func (g *Generator) writeGRPCShared(rel string, res *Result) error {
 
 func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result) error {
 	fields := buildTemplateFields(model.Fields, g.manifest.DB)
-	needsStrconv := false
+	needsStrconv, needsTime, needsJSON := false, false, false
 	for _, f := range fields {
 		// bindForm parses int/int64/float values with strconv — for both scalar
 		// fields and array fields ([]int/[]int64/[]float64). string and bool
 		// (and []string/[]bool) need no strconv.
 		if strings.Contains(f.GoType, "int") || strings.Contains(f.GoType, "float") {
 			needsStrconv = true
-			break
+		}
+		if f.IsTime {
+			needsTime = true
+		}
+		if f.IsJSON {
+			needsJSON = true
 		}
 	}
 	ctx := ssrHandlerCtx{
@@ -840,6 +859,8 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 		Plural:       model.Plural(),
 		Fields:       fields,
 		NeedsStrconv: needsStrconv,
+		NeedsTime:    needsTime,
+		NeedsJSON:    needsJSON,
 		Ops:          model.Ops,
 	}
 	src, err := renderTemplate(ssrHandlerTmpl, ctx)
@@ -851,6 +872,7 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 		return fmt.Errorf("%s: %w", rel, err)
 	}
 	abs := filepath.Join(g.root, rel)
+	existed := fileExists(abs)
 	g.recordDiff(rel, formatted, res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
@@ -860,7 +882,7 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 			return fmt.Errorf("write %s: %w", rel, err)
 		}
 	}
-	if fileExists(abs) {
+	if existed {
 		res.Overwritten = append(res.Overwritten, rel)
 	} else {
 		res.Created = append(res.Created, rel)
@@ -935,13 +957,20 @@ func renderTemplateHTML(tmplStr string, data any) (string, error) {
 
 func (g *Generator) writeRegistry(res *Result) error {
 	models := make([]registryModel, 0, len(g.manifest.Models))
+	hasHandlers := false
 	for name, entry := range g.manifest.Models {
+		if !entry.NoHandler {
+			hasHandlers = true
+		}
 		models = append(models, registryModel{
 			Name:      name,
 			NoHandler: entry.NoHandler,
 			Ops:       parser.OpsFromSkipped(entry.SkippedOps),
 		})
 	}
+	// Map iteration order is random — sort so registry.go is deterministic
+	// and re-running gen without changes stays byte-identical.
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 
 	rel := filepath.Join("internal", "app", "registry.go")
 	var tmpl string
@@ -956,10 +985,11 @@ func (g *Generator) writeRegistry(res *Result) error {
 		tmpl = registryTmpl
 	}
 	return g.writeGoFile(rel, tmpl, registryCtx{
-		ModulePath: g.modulePath,
-		Models:     models,
-		GRPC:       g.isGRPC(),
-		IsSSR:      g.isSSR(),
+		ModulePath:  g.modulePath,
+		Models:      models,
+		GRPC:        g.isGRPC(),
+		IsSSR:       g.isSSR(),
+		HasHandlers: hasHandlers,
 	}, true, res)
 }
 
@@ -1067,7 +1097,6 @@ func buildFieldLines(fields []templateField, db string) string {
 	return b.String()
 }
 
-
 func buildMigrationCtx(model *parser.Model, added, removed []parser.Field, db string) migrationCtx {
 	var idDef string
 	switch db {
@@ -1079,12 +1108,13 @@ func buildMigrationCtx(model *parser.Model, added, removed []parser.Field, db st
 		idDef = "id TEXT PRIMARY KEY DEFAULT (uuid7())"
 	}
 	return migrationCtx{
-		Name:      model.Name,
-		TableName: model.TableName,
-		Fields:    buildTemplateFields(model.Fields, db),
-		Added:     buildTemplateFields(added, db),
-		Removed:   buildTemplateFields(removed, db),
-		IDDef:     idDef,
+		Name:       model.Name,
+		TableName:  model.TableName,
+		Fields:     buildTemplateFields(model.Fields, db),
+		Added:      prepareAlterFields(buildTemplateFields(added, db), db),
+		Removed:    prepareAlterFields(buildTemplateFields(removed, db), db),
+		IDDef:      idDef,
+		IsPostgres: db == "postgres",
 	}
 }
 

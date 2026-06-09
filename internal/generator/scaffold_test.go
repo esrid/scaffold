@@ -705,4 +705,3 @@ func TestScaffold_NoHandler_SkipsHTTP(t *testing.T) {
 		t.Error("expected routes_gen.go to not mount Product routes")
 	}
 }
-

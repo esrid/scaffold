@@ -139,6 +139,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --api %q: must be ssr, rest, or grpc", apiMode)
 	}
 
+	// Refuse to scaffold into a non-empty directory: walkAndWrite overwrites
+	// blindly, which would clobber an existing project. A lone .git/ (or other
+	// dotfiles, e.g. from "git init" + a .gitignore) is allowed.
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), ".") {
+				return fmt.Errorf("init: directory %s is not empty — refusing to overwrite existing files", dir)
+			}
+		}
+	}
+
 	// Create target directory
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("init: mkdir: %w", err)

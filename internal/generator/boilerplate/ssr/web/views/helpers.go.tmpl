@@ -3,10 +3,12 @@ package views
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 // display renders a field value for templates, dereferencing pointers (nil
-// pointers render as the empty string) and formatting everything else with %v.
+// pointers render as the empty string). Byte slices (json.RawMessage) render
+// as text, other slices as comma-separated values, everything else with %v.
 func display(v any) string {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Pointer {
@@ -17,6 +19,16 @@ func display(v any) string {
 	}
 	if !rv.IsValid() {
 		return ""
+	}
+	if rv.Kind() == reflect.Slice {
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return string(rv.Bytes())
+		}
+		parts := make([]string, rv.Len())
+		for i := range parts {
+			parts[i] = fmt.Sprintf("%v", rv.Index(i).Interface())
+		}
+		return strings.Join(parts, ", ")
 	}
 	return fmt.Sprintf("%v", rv.Interface())
 }

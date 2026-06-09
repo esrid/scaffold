@@ -18,6 +18,9 @@ make run
 scaffold gen Product name:string! price:float! description:string
 # → GET/POST/PUT/DELETE /api/products
 ```
+
+List endpoints return newest-first and accept `?limit=` (default 20, max 100)
+and `?offset=` query parameters.
 [[end]][[if eq .APIMode "ssr"]]Server runs on `:8080`. Add models with `scaffold gen`:
 
 ```bash
@@ -42,13 +45,15 @@ internal/
 │   ├── ports/        # repository and service interfaces
 │   └── services/     # business logic
 └── adapters/
-    ├── http/         # [[if eq .APIMode "ssr"]]SSR handlers, bindForm[[else]]JSON CRUD handler[[end]]
-    ├── store/        # SQL queries[[if eq .APIMode "grpc"]]
-    └── grpc/         # gRPC handlers, translateError[[end]][[if ne .APIMode "grpc"]]
-    └── store/        # SQL queries (last entry, no grpc)[[end]]
+    ├── http/         # [[if eq .APIMode "ssr"]]SSR handlers, bindForm[[else]]JSON CRUD handler[[end]][[if eq .APIMode "grpc"]]
+    ├── store/        # SQL queries
+    └── grpc/         # gRPC handlers, translateError[[else]]
+    └── store/        # SQL queries[[end]]
 internal/app/
-├── app.go            # server startup, route mounting
+├── app.go            # server startup, route mounting (yours)
 ├── config.go         # env-based config
+├── custom.go         # wire your own services here (yours)
+├── routes_gen.go     # model route registration (auto-regenerated)
 └── registry.go       # dependency wiring (auto-regenerated)
 [[if eq .APIMode "ssr"]]web/
 ├── static/app.css    # plain CSS, edit freely — served at /static/app.css
@@ -106,25 +111,37 @@ Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool
 
 Useful modifiers: `,unique`, `,index`, `,default=value`, `,fk=table`, `,cascade` (requires `fk=`), `,setnull` (requires `fk=`), `,check=expr` (comma syntax is shell-safe in zsh/bash).
 
+Field names that are SQL reserved words (`order`, `user`, `group`, …) or that
+collide with the auto-managed `id`/`created_at`/`updated_at` columns are
+rejected at generation time.
+
 > [!NOTE]
-> **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}.go`.
+> **Migrations:** adding a NOT NULL field to an existing model emits an
+> `ALTER TABLE` with a zero-value `DEFAULT` so the migration applies cleanly to
+> existing rows. Changing the **type or modifiers** of an existing field updates
+> the code and `schema.sql` but writes **no migration** — scaffold prints a
+> warning and you write the column alteration by hand.
+
+> [!NOTE]
+> **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}_gen.go`.
 
 ## What scaffold manages vs. what's yours
 
 | File | Ownership |
 |------|-----------|
-| `domain/{model}.go` — struct fields | scaffold patches via markers |
-| `domain/{model}.go` — `Validate()` | **yours** |
+| `domain/{model}_gen.go` — struct, GetID/WithID | scaffold regenerates |
+| `domain/{model}.go` — `Validate()` + methods | **yours** |
 | `ports/{model}.go` | written once, never touched |
 | `services/{model}_service_gen.go` | scaffold regenerates |
 | `services/{model}_service.go` | **yours** |
 | `store/{model}_store_gen.go` | scaffold regenerates |
 | `store/{model}_store.go` | **yours** — add custom queries here |
 | `app/registry.go` | scaffold regenerates |
-| `app/app.go` — route block | scaffold regenerates |[[if eq .APIMode "ssr"]]
+| `app/routes_gen.go` | scaffold regenerates |
+| `app/app.go`, `app/custom.go` | **yours** |[[if eq .APIMode "ssr"]]
 | `http/{model}_handler_gen.go` | scaffold regenerates |
 | `http/{model}_handler.go` | **yours** |
-| `web/views/{model}.templ` | scaffold regenerates on field changes (run `make generate`) |[[end]][[if eq .APIMode "grpc"]]
+| `web/views/{model}.templ` | written once — **yours** (refresh with `scaffold gen {Model} --regen-views`) |[[end]][[if eq .APIMode "grpc"]]
 | `adapters/grpc/{model}_handler_gen.go` | scaffold regenerates |
 | `adapters/grpc/shared.go` | written once |
 | `internal/adapters/grpc/pb/{model}.proto` | scaffold regenerates |[[end]]
@@ -176,7 +193,7 @@ func (s *ProductService) Publish(ctx context.Context, id string) error {
 **Extra routes** — in `internal/adapters/http/{model}_handler.go`:
 
 ```go
-// Add RegisterExtraRoutes to the app.go route block manually.
+// Call this from mountRoutes in internal/app/app.go (app.go is yours).
 func (h *ProductHandler) RegisterExtraRoutes(r chi.Router) {
     r.Get("/featured", h.Featured)
 }

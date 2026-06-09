@@ -13,6 +13,7 @@ import (
 
 // The all: prefix is required so dotfiles (e.g. static/.env.example.tmpl) are
 // embedded — a bare //go:embed pattern silently skips names starting with "." or "_".
+//
 //go:embed all:static all:sqlite all:postgres all:grpc all:rest all:ssr
 var files embed.FS
 

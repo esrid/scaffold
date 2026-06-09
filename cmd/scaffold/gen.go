@@ -3,6 +3,7 @@ package scaffold
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/esrid/scaffold/internal/generator"
 	"github.com/esrid/scaffold/internal/parser"
@@ -70,14 +71,15 @@ MODIFIERS  (comma-separated after the type, or inside {…})
 GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
 
   Always (all modes):
-    internal/core/domain/product.go               struct + Validate() — fields patched via markers
+    internal/core/domain/product_gen.go           struct + GetID/WithID — always regenerated
+    internal/core/domain/product.go               Validate() + custom methods — written once
     internal/core/ports/product.go                interfaces — written once
     internal/core/services/product_service_gen.go CRUD delegation — always regenerated
     internal/core/services/product_service.go     your business logic — never overwritten
     internal/adapters/store/product_store_gen.go  generated SQL — always regenerated
     internal/adapters/store/product_store.go      your custom queries — never overwritten
     internal/app/registry.go                      dependency wiring — always regenerated
-    internal/app/app.go                           route block updated
+    internal/app/routes_gen.go                    route registration — always regenerated
     internal/adapters/store/migrations/           numbered SQL migration file
 
   SSR mode only:
@@ -88,11 +90,11 @@ GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
                                                   "templ generate" is run for you)
 
   gRPC mode only:
-    api/proto/v1/product.proto                    protobuf definition — always regenerated
+    internal/adapters/grpc/pb/product.proto       protobuf definition — always regenerated
     internal/adapters/grpc/product_handler_gen.go gRPC handler — always regenerated
     internal/adapters/grpc/shared.go              error translation — written once
 
-ROUTES MOUNTED IN app.go
+ROUTES (registered in internal/app/routes_gen.go)
 
   REST:  r.Route("/api/products", …)   → GET / GET/{id} / POST / PUT/{id} / DELETE/{id}
   SSR:   r.Mount("/products", …)       → GET / GET/new / GET/{id} / GET/{id}/edit /
@@ -215,6 +217,16 @@ func runGen(cmd *cobra.Command, args []string) error {
 	result, err := g.Scaffold(model)
 	if err != nil {
 		return err
+	}
+
+	// A changed field definition (type, nullability, modifiers) is updated in
+	// the generated code and schema.sql, but scaffold cannot safely emit the
+	// matching ALTER (column type changes are DB-specific and lossy) — make
+	// the gap loud instead of letting code and database drift silently.
+	if len(model.ChangedFields) > 0 {
+		fmt.Printf("⚠ Field definition changed in place: %s\n", strings.Join(model.ChangedFields, ", "))
+		fmt.Println("  Generated code and schema.sql were updated, but NO migration was written.")
+		fmt.Println("  Write a manual migration in internal/adapters/store/migrations/ to alter the column(s).")
 	}
 
 	if !dryRun {

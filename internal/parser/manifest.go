@@ -125,9 +125,30 @@ func SaveManifest(root string, m *Manifest) error {
 		return fmt.Errorf("manifest: marshal: %w", err)
 	}
 
+	// Write atomically (temp file + rename) so a crash mid-write can't leave a
+	// truncated models.json behind — the manifest is the source of truth.
 	path := filepath.Join(root, manifestPath)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	tmp, err := os.CreateTemp(dir, "models-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("manifest: temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("manifest: write: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("manifest: close: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("manifest: chmod: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("manifest: rename: %w", err)
 	}
 	return nil
 }

@@ -9,18 +9,22 @@ import (
 
 // templateField is the field view passed to templates.
 type templateField struct {
-	Name         string // snake_case column name
-	GoName       string // PascalCase Go field name (idiomatic, acronym-aware: sku -> SKU)
-	ProtoGoName  string // Go name as protoc-gen-go derives it from the proto field (sku -> Sku)
-	GoType       string // e.g. "string", "*string", "time.Time"
-	SQLType      string
-	NotNull      bool
-	IsJSON       bool
-	IsArray      bool // true when GoType is a slice ([]string, []int, ...)
-	IsTime       bool
-	IsPointer    bool   // true when GoType starts with "*"
-	ProtoType    string // e.g. "string", "optional int32", "google.protobuf.Timestamp"
-	HasIndex     bool
+	Name        string // snake_case column name
+	GoName      string // PascalCase Go field name (idiomatic, acronym-aware: sku -> SKU)
+	ProtoGoName string // Go name as protoc-gen-go derives it from the proto field (sku -> Sku)
+	GoType      string // e.g. "string", "*string", "time.Time"
+	SQLType     string
+	NotNull     bool
+	IsJSON      bool
+	IsArray     bool // true when GoType is a slice ([]string, []int, ...)
+	IsTime      bool
+	IsPointer   bool   // true when GoType starts with "*"
+	ProtoType   string // e.g. "string", "optional int32", "google.protobuf.Timestamp"
+	HasIndex    bool
+	// HasUnique is set only for ALTER migrations on SQLite, where inline
+	// UNIQUE on ADD COLUMN is rejected — the template emits a separate
+	// CREATE UNIQUE INDEX instead.
+	HasUnique    bool
 	Mods         []string
 	SQLModifiers string
 }
@@ -71,6 +75,10 @@ type registryCtx struct {
 	Models     []registryModel
 	GRPC       bool
 	IsSSR      bool
+	// HasHandlers is true when at least one model generates an HTTP/gRPC handler.
+	// It gates the httpadapter import so a project of only --no-handler models
+	// (or one left handler-less after a destroy) doesn't import it unused.
+	HasHandlers bool
 }
 
 // ssrHandlerCtx is the data passed to ssrHandlerTmpl.
@@ -80,7 +88,9 @@ type ssrHandlerCtx struct {
 	Lower        string
 	Plural       string
 	Fields       []templateField
-	NeedsStrconv bool      // true when any field requires strconv (int/float/bool)
+	NeedsStrconv bool       // true when any field requires strconv (int/float)
+	NeedsTime    bool       // true when any field is time.Time/*time.Time (bindForm parses it)
+	NeedsJSON    bool       // true when any field is json.RawMessage (bindForm validates it)
 	Ops          parser.Ops // which CRUD operations to generate
 }
 
@@ -107,12 +117,13 @@ type grpcHandlerCtx struct {
 
 // migrationCtx is shared by migration templates.
 type migrationCtx struct {
-	Name      string
-	TableName string
-	Fields    []templateField
-	Added     []templateField
-	Removed   []templateField
-	IDDef     string // full id column definition, e.g. "id TEXT PRIMARY KEY DEFAULT (uuid7())"
+	Name       string
+	TableName  string
+	Fields     []templateField
+	Added      []templateField
+	Removed    []templateField
+	IDDef      string // full id column definition, e.g. "id TEXT PRIMARY KEY DEFAULT (uuid7())"
+	IsPostgres bool
 }
 
 // buildTemplateFields converts parser.Field slice to templateField slice, fully DB-aware.
@@ -224,7 +235,7 @@ func buildSQLModifiers(mods []string, db string) string {
 			// cascade/setnull consumed by fk= below; index handled separately
 		case strings.HasPrefix(m, "default="):
 			val := strings.TrimPrefix(m, "default=")
-			parts = append(parts, fmt.Sprintf("DEFAULT '%s'", val))
+			parts = append(parts, "DEFAULT "+sqlDefaultLiteral(val))
 		case strings.HasPrefix(m, "fk="):
 			table := strings.ToLower(strings.TrimPrefix(m, "fk="))
 			var onDelete string
@@ -250,6 +261,101 @@ func buildSQLModifiers(mods []string, db string) string {
 		return ""
 	}
 	return " " + strings.Join(parts, " ")
+}
+
+// sqlDefaultLiteral renders a default= value as a SQL literal: numbers and the
+// SQL keywords TRUE/FALSE/NULL/CURRENT_* pass through raw, everything else is
+// single-quoted with embedded quotes doubled so values like O'Brien can't
+// produce broken SQL.
+func sqlDefaultLiteral(val string) string {
+	switch strings.ToUpper(val) {
+	case "TRUE", "FALSE", "NULL", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME":
+		return strings.ToUpper(val)
+	}
+	if isSQLNumber(val) {
+		return val
+	}
+	return "'" + strings.ReplaceAll(val, "'", "''") + "'"
+}
+
+// isSQLNumber reports whether s is a plain integer or decimal literal.
+func isSQLNumber(s string) bool {
+	if s == "" {
+		return false
+	}
+	if s[0] == '-' || s[0] == '+' {
+		s = s[1:]
+	}
+	dot := false
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+		case c == '.' && !dot:
+			dot = true
+		default:
+			return false
+		}
+	}
+	return s != "" && s != "."
+}
+
+// prepareAlterFields adapts template fields for ALTER TABLE migrations:
+//   - a NOT NULL column without an explicit default gets a zero-value DEFAULT,
+//     because SQLite always rejects ADD COLUMN NOT NULL without one (and
+//     Postgres rejects it on non-empty tables);
+//   - on SQLite, inline UNIQUE is invalid in ADD COLUMN — it is stripped from
+//     the column definition and flagged (HasUnique) so the template emits an
+//     equivalent CREATE UNIQUE INDEX statement instead.
+func prepareAlterFields(fields []templateField, db string) []templateField {
+	out := make([]templateField, len(fields))
+	for i, f := range fields {
+		if db != "postgres" && containsMod(f.Mods, "unique") {
+			f.HasUnique = true
+			f.SQLModifiers = strings.Replace(f.SQLModifiers, " UNIQUE", "", 1)
+			if strings.TrimSpace(f.SQLModifiers) == "" {
+				f.SQLModifiers = ""
+			}
+		}
+		if f.NotNull && !hasDefaultMod(f.Mods) {
+			f.SQLModifiers += " DEFAULT " + zeroSQLDefault(f, db)
+		}
+		out[i] = f
+	}
+	return out
+}
+
+func hasDefaultMod(mods []string) bool {
+	for _, m := range mods {
+		if strings.HasPrefix(m, "default=") {
+			return true
+		}
+	}
+	return false
+}
+
+// zeroSQLDefault returns the SQL zero value for a column, used to backfill
+// existing rows when a NOT NULL column is added without an explicit default.
+func zeroSQLDefault(f templateField, db string) string {
+	switch {
+	case f.IsArray:
+		if db == "postgres" {
+			return "'{}'"
+		}
+		return "'[]'" // JSON-encoded TEXT on SQLite
+	case f.IsJSON:
+		return "'{}'"
+	case f.IsTime:
+		return "CURRENT_TIMESTAMP"
+	case strings.Contains(f.GoType, "int"), strings.Contains(f.GoType, "float"):
+		return "0"
+	case strings.Contains(f.GoType, "bool"):
+		if db == "postgres" {
+			return "FALSE"
+		}
+		return "0" // bool is INTEGER on SQLite
+	default:
+		return "''"
+	}
 }
 
 // containsMod reports whether mods contains the exact modifier m.

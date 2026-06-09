@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "skills": {
+    "chrome-extension": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/chrome-extension/SKILL.md",
+      "computedHash": "786d62eb298f9211792e65dad1916c641cef7a2078a96adde8cdbe600b90dd24"
+    },
+    "conventional-git": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/conventional-git/SKILL.md",
+      "computedHash": "906b75cb00697e1734d561c7fae8441f9eb97cebacf06fe9d885b8b4fe079d1d"
+    },
+    "copywriting-cta": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/copywriting-cta/SKILL.md",
+      "computedHash": "2909f0c36f2bf5a6ef1dd9d780da90b39e9018203d12559b998b78f91d95fc13"
+    },
+    "copywriting-hooks": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/copywriting-hooks/SKILL.md",
+      "computedHash": "f7b2fcdd96de56ebda34cb6babae991d19b4fa001b7c1f533f684292eeff07b8"
+    },
+    "copywriting-prose-creator": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/copywriting-prose-creator/SKILL.md",
+      "computedHash": "a2040579a3c60343715e9364786723cc1ce858fcd120cefe50896860fe03390f"
+    },
+    "copywriting-tone-of-voice-creator": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/copywriting-tone-of-voice-creator/SKILL.md",
+      "computedHash": "f4880be34eeea3bdac7ac499cb5dd1f34e1c606fdec422ae89f11160eb88672b"
+    },
+    "crxjs": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/crxjs/SKILL.md",
+      "computedHash": "7c102fc87c8de20db20fc6799c52976ba6cfc8a14336923a2d431c47f95f5411"
+    },
+    "deep-research": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/deep-research/SKILL.md",
+      "computedHash": "ae7f9b06efcbe6263238396bdc70e2aaf0cc6ae1b288a320a9ca8731d8bd5030"
+    },
+    "frontend-design-deslop": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-design-deslop/SKILL.md",
+      "computedHash": "05c1fdca526ff4efa21d3ee7a7306a0f449aead9e66a28d100f07f6dbcb6ee30"
+    },
+    "humaniseur-fr": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/humaniseur-fr/SKILL.md",
+      "computedHash": "48139ecb51cba9d7bbd720a27184bfad3a69b789963b01e087f12d99e6d7a9b6"
+    },
+    "influence-and-negotiation": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/influence-and-negotiation/SKILL.md",
+      "computedHash": "884e0f6966aa539433d61b0cfdf2e189d38464b0ed026969e7650cc0ac4be773"
+    },
+    "linkedin-ghostwriting": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/linkedin-ghostwriting/SKILL.md",
+      "computedHash": "652148c601ebe186fe655234794eb24f3319e3bf4d55dd37e8963dca17a1bb6e"
+    },
+    "press-release-writer": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/press-release-writer/SKILL.md",
+      "computedHash": "883e7c199f3557524587403d0b13cda36355e0dc2b71f03b8f87381805b6364a"
+    },
+    "promql-cli": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/promql-cli/SKILL.md",
+      "computedHash": "e21af4de153f39843dfb9bd5659564f8ab8a2f9f69b9587d8b6e228db5ec5780"
+    },
+    "site-launch-checklist": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/site-launch-checklist/SKILL.md",
+      "computedHash": "811e4195011db485e76b998c1111d504105a262eafcce6027d3008612206c3ea"
+    },
+    "skill-progressive-disclosure-design": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/skill-progressive-disclosure-design/SKILL.md",
+      "computedHash": "604325238ccedb84b689f7402853f4b1d3e6c350aefb75b1b46339e7eb8fbfc6"
+    },
+    "snyk-agent-scan-compliance": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/snyk-agent-scan-compliance/SKILL.md",
+      "computedHash": "c98fdc55928e283d282ba60484d968bfe935113aa448c386ddb35ccb78d99078"
+    },
+    "substack-ghostwriting": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/substack-ghostwriting/SKILL.md",
+      "computedHash": "a68c70651e59b9e109e794024692575565bc0b815f4014fe295218e0fe5b4b75"
+    },
+    "technical-article-writer": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/technical-article-writer/SKILL.md",
+      "computedHash": "82b749af66f645874fab03a4067a75f6ec78e6f3e095d8bcf7d51bc7a3d8f3b8"
+    },
+    "training-report": {
+      "source": "samber/cc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/training-report/SKILL.md",
+      "computedHash": "3b6bca31bf9d69e65aa80193218b769cee2a5bc84a966fe573fe6a153a66997f"
+    }
+  }
+}

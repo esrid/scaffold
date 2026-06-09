@@ -148,7 +148,9 @@ var _ ports.CRUDStore[domain.{{.Name}}] = (*{{.Name}}Store)(nil)
 
 const (
 	sql{{.Name}}Get    = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} WHERE id = ?` + "`" + `
-	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} LIMIT ? OFFSET ?` + "`" + `
+	// id is a UUIDv7 (time-ordered), so ORDER BY id DESC returns newest first
+	// with a deterministic order — required for stable pagination.
+	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} ORDER BY id DESC LIMIT ? OFFSET ?` + "`" + `
 	sql{{.Name}}Create = ` + "`" + `INSERT INTO {{.TableName}} ({{.InsertCols}}) VALUES ({{.InsertPlaceholders}}) RETURNING id, created_at, updated_at` + "`" + `
 	sql{{.Name}}Update = ` + "`" + `UPDATE {{.TableName}} SET {{.UpdateSet}}, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING created_at, updated_at` + "`" + `
 	sql{{.Name}}Delete = ` + "`" + `DELETE FROM {{.TableName}} WHERE id = ?` + "`" + `
@@ -334,20 +336,44 @@ DROP TRIGGER IF EXISTS trg_{{.TableName}}_updated_at;
 DROP TABLE IF EXISTS {{.TableName}};
 `
 
-// migrationAddColTmpl generates ALTER TABLE ADD COLUMN migration
+// migrationAddColTmpl generates ALTER TABLE ADD COLUMN migration.
+// NOT NULL columns without an explicit default get a zero-value DEFAULT
+// (SQLite rejects ADD COLUMN NOT NULL without one; Postgres rejects it on
+// non-empty tables). On SQLite, unique columns get a CREATE UNIQUE INDEX
+// instead of inline UNIQUE, which ADD COLUMN does not support.
 const migrationAddColTmpl = `-- +goose Up
 {{- range .Added}}
 ALTER TABLE {{$.TableName}} ADD COLUMN {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}};
 {{- end}}
+{{- range .Added}}{{if .HasUnique}}
+CREATE UNIQUE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}}_unique ON {{$.TableName}}({{.Name}});
+{{- end}}{{end}}
+{{- range .Added}}{{if .HasIndex}}
+CREATE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}{{if and $.IsPostgres (or .IsJSON .IsArray)}} USING GIN ({{.Name}}){{else}}({{.Name}}){{end}};
+{{- end}}{{end}}
 
 -- +goose Down
+{{- range .Added}}{{if .HasIndex}}
+DROP INDEX IF EXISTS idx_{{$.TableName}}_{{.Name}};
+{{- end}}{{end}}
+{{- range .Added}}{{if .HasUnique}}
+DROP INDEX IF EXISTS idx_{{$.TableName}}_{{.Name}}_unique;
+{{- end}}{{end}}
 {{- range .Added}}
 ALTER TABLE {{$.TableName}} DROP COLUMN {{.Name}};
 {{- end}}
 `
 
-// migrationDropColTmpl generates ALTER TABLE DROP COLUMN migration
+// migrationDropColTmpl generates ALTER TABLE DROP COLUMN migration. Indexes on
+// the column are dropped first: SQLite refuses to drop an indexed column, and
+// on Postgres the statements are harmless no-ops if the index is already gone.
 const migrationDropColTmpl = `-- +goose Up
+{{- range .Removed}}{{if .HasIndex}}
+DROP INDEX IF EXISTS idx_{{$.TableName}}_{{.Name}};
+{{- end}}{{end}}
+{{- range .Removed}}{{if .HasUnique}}
+DROP INDEX IF EXISTS idx_{{$.TableName}}_{{.Name}}_unique;
+{{- end}}{{end}}
 {{- range .Removed}}
 ALTER TABLE {{$.TableName}} DROP COLUMN {{.Name}};
 {{- end}}
@@ -356,6 +382,12 @@ ALTER TABLE {{$.TableName}} DROP COLUMN {{.Name}};
 {{- range .Removed}}
 ALTER TABLE {{$.TableName}} ADD COLUMN {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}};
 {{- end}}
+{{- range .Removed}}{{if .HasUnique}}
+CREATE UNIQUE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}}_unique ON {{$.TableName}}({{.Name}});
+{{- end}}{{end}}
+{{- range .Removed}}{{if .HasIndex}}
+CREATE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}{{if and $.IsPostgres (or .IsJSON .IsArray)}} USING GIN ({{.Name}}){{else}}({{.Name}}){{end}};
+{{- end}}{{end}}
 `
 
 // migrationDropTableTmpl generates the DROP TABLE migration for destroy
@@ -422,12 +454,16 @@ import (
 	"log/slog"
 {{- if .Models}}
 
+	{{- if .HasHandlers}}
 	httpadapter "{{.ModulePath}}/internal/adapters/http"
-	{{- if .GRPC}}
+	{{- end}}
+	{{- if and .GRPC .HasHandlers}}
 	grpcadapter "{{.ModulePath}}/internal/adapters/grpc"
 	{{- end}}
 	"{{.ModulePath}}/internal/adapters/store"
+	{{- if .HasHandlers}}
 	"{{.ModulePath}}/internal/core/domain"
+	{{- end}}
 	"{{.ModulePath}}/internal/core/ports"
 	"{{.ModulePath}}/internal/core/services"
 {{- end}}
@@ -546,7 +582,9 @@ var _ ports.CRUDStore[domain.{{.Name}}] = (*{{.Name}}Store)(nil)
 
 const (
 	sql{{.Name}}Get    = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} WHERE id = $1` + "`" + `
-	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} LIMIT $1 OFFSET $2` + "`" + `
+	// id is a UUIDv7 (time-ordered), so ORDER BY id DESC returns newest first
+	// with a deterministic order — required for stable pagination.
+	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} ORDER BY id DESC LIMIT $1 OFFSET $2` + "`" + `
 	sql{{.Name}}Create = ` + "`" + `INSERT INTO {{.TableName}} ({{.InsertCols}}) VALUES ({{.InsertPlaceholders}}) RETURNING {{.SelectCols}}` + "`" + `
 	sql{{.Name}}Update = ` + "`" + `UPDATE {{.TableName}} SET {{.UpdateSet}}, updated_at = NOW() WHERE id = ${{.UpdateIDIdx}} RETURNING {{.SelectCols}}` + "`" + `
 	sql{{.Name}}Delete = ` + "`" + `DELETE FROM {{.TableName}} WHERE id = $1` + "`" + `
@@ -572,13 +610,15 @@ func (s *{{.Name}}Store) Create(ctx context.Context, p domain.{{.Name}}) (domain
 	const op = "{{.Name}}Store.Create"
 	rows, err := s.pool.Query(ctx, sql{{.Name}}Create, {{.CreateArgs}})
 	if err != nil {
+		return domain.{{.Name}}{}, DecorateError(err, op)
+	}
+	// pgx defers query execution errors to row collection, so constraint
+	// violations surface here — not at Query time.
+	result, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.{{.Name}}])
+	if err != nil {
 		if IsUniqueViolation(err) {
 			return domain.{{.Name}}{}, &domain.AlreadyExistsError{Entity: "{{.Name}}"}
 		}
-		return domain.{{.Name}}{}, DecorateError(err, op)
-	}
-	result, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.{{.Name}}])
-	if err != nil {
 		return domain.{{.Name}}{}, DecorateError(err, op)
 	}
 	return result, nil
@@ -588,15 +628,17 @@ func (s *{{.Name}}Store) Update(ctx context.Context, p domain.{{.Name}}) (domain
 	const op = "{{.Name}}Store.Update"
 	rows, err := s.pool.Query(ctx, sql{{.Name}}Update, {{.UpdateArgs}})
 	if err != nil {
-		if IsUniqueViolation(err) {
-			return domain.{{.Name}}{}, &domain.AlreadyExistsError{Entity: "{{.Name}}"}
-		}
 		return domain.{{.Name}}{}, DecorateError(err, op)
 	}
+	// pgx defers query execution errors to row collection, so constraint
+	// violations surface here — not at Query time.
 	result, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.{{.Name}}])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.{{.Name}}{}, &domain.NotFoundError{Entity: "{{.Name}}", ID: p.ID}
+		}
+		if IsUniqueViolation(err) {
+			return domain.{{.Name}}{}, &domain.AlreadyExistsError{Entity: "{{.Name}}"}
 		}
 		return domain.{{.Name}}{}, DecorateError(err, op)
 	}
@@ -627,12 +669,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 {{- if .Models}}
 
+	{{- if .HasHandlers}}
 	httpadapter "{{.ModulePath}}/internal/adapters/http"
-	{{- if .GRPC}}
+	{{- end}}
+	{{- if and .GRPC .HasHandlers}}
 	grpcadapter "{{.ModulePath}}/internal/adapters/grpc"
 	{{- end}}
 	"{{.ModulePath}}/internal/adapters/store"
+	{{- if .HasHandlers}}
 	"{{.ModulePath}}/internal/core/domain"
+	{{- end}}
 	"{{.ModulePath}}/internal/core/ports"
 	"{{.ModulePath}}/internal/core/services"
 {{- end}}
@@ -822,9 +868,6 @@ package api.v1;
 option go_package = "{{.ModulePath}}/internal/adapters/grpc/pb";
 
 import "google/protobuf/timestamp.proto";
-{{- range .Fields}}{{if eq .ProtoType "bytes"}}
-import "google/protobuf/struct.proto";
-{{- end}}{{end}}
 
 service {{.Name}}Service {
   {{- if .Ops.Create}}
@@ -1046,8 +1089,10 @@ import (
 	"log/slog"
 {{- if .Models}}
 
+	{{- if .HasHandlers}}
 	httpadapter "{{.ModulePath}}/internal/adapters/http"
-	{{- if .GRPC}}
+	{{- end}}
+	{{- if and .GRPC .HasHandlers}}
 	grpcadapter "{{.ModulePath}}/internal/adapters/grpc"
 	{{- end}}
 	"{{.ModulePath}}/internal/adapters/store"
@@ -1159,8 +1204,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 {{- if .Models}}
 
+	{{- if .HasHandlers}}
 	httpadapter "{{.ModulePath}}/internal/adapters/http"
-	{{- if .GRPC}}
+	{{- end}}
+	{{- if and .GRPC .HasHandlers}}
 	grpcadapter "{{.ModulePath}}/internal/adapters/grpc"
 	{{- end}}
 	"{{.ModulePath}}/internal/adapters/store"
@@ -1268,11 +1315,17 @@ const ssrHandlerTmpl = `// Code generated by scaffold. DO NOT EDIT.
 package http
 
 import (
+	{{- if .NeedsJSON}}
+	"encoding/json"
+	{{- end}}
 	"errors"
 	"log/slog"
 	"net/http"
 	{{- if .NeedsStrconv}}
 	"strconv"
+	{{- end}}
+	{{- if .NeedsTime}}
+	"time"
 	{{- end}}
 
 	"{{.ModulePath}}/internal/core/domain"
@@ -1481,6 +1534,36 @@ func (h *{{.Name}}Handler) bindForm(r *http.Request, item domain.{{.Name}}) doma
 {{- else if eq .GoType "*bool"}}
 	v := r.FormValue("{{.Name}}") == "on" || r.FormValue("{{.Name}}") == "true"
 	item.{{.GoName}} = &v
+{{- else if eq .GoType "time.Time"}}
+	if raw := r.FormValue("{{.Name}}"); raw != "" {
+		for _, layout := range []string{"2006-01-02T15:04", "2006-01-02T15:04:05", time.RFC3339, "2006-01-02"} {
+			if t, err := time.Parse(layout, raw); err == nil {
+				item.{{.GoName}} = t
+				break
+			}
+		}
+	}
+{{- else if eq .GoType "*time.Time"}}
+	if val, ok := r.Form["{{.Name}}"]; ok {
+		if len(val) > 0 && val[0] == "" {
+			item.{{.GoName}} = nil
+		} else if len(val) > 0 {
+			for _, layout := range []string{"2006-01-02T15:04", "2006-01-02T15:04:05", time.RFC3339, "2006-01-02"} {
+				if t, err := time.Parse(layout, val[0]); err == nil {
+					item.{{.GoName}} = &t
+					break
+				}
+			}
+		}
+	}
+{{- else if eq .GoType "json.RawMessage"}}
+	if val, ok := r.Form["{{.Name}}"]; ok {
+		if len(val) > 0 && val[0] == "" {
+			item.{{.GoName}} = nil
+		} else if len(val) > 0 && json.Valid([]byte(val[0])) {
+			item.{{.GoName}} = json.RawMessage(val[0])
+		}
+	}
 {{- end}}
 {{- end}}
 	return item
@@ -1498,6 +1581,11 @@ func (h *{{.Name}}Handler) serverError(w http.ResponseWriter, err error) {
 	var nfErr *domain.NotFoundError
 	if errors.As(err, &nfErr) {
 		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	var aeErr *domain.AlreadyExistsError
+	if errors.As(err, &aeErr) {
+		http.Error(w, aeErr.Error(), http.StatusConflict)
 		return
 	}
 	var valErr *domain.ValidationError
@@ -1608,6 +1696,10 @@ templ [[.Name]]Form(item *domain.[[.Name]], isNew bool, errors map[string]string
 					<label for="[[.Name]]">[[.GoName]]</label>
 					[[if or (eq .GoType "bool") (eq .GoType "*bool")]]
 					<input id="[[.Name]]" name="[[.Name]]" type="checkbox" if item != nil && truthy(item.[[.GoName]]) { checked }/>
+					[[else if eq .GoType "time.Time"]]
+					<input id="[[.Name]]" name="[[.Name]]" type="datetime-local" if item != nil { value={ item.[[.GoName]].Format("2006-01-02T15:04") } }/>
+					[[else if eq .GoType "*time.Time"]]
+					<input id="[[.Name]]" name="[[.Name]]" type="datetime-local" if item != nil && item.[[.GoName]] != nil { value={ item.[[.GoName]].Format("2006-01-02T15:04") } }/>
 					[[else]]
 					<input id="[[.Name]]" name="[[.Name]]" type="text" if item != nil { value={ display(item.[[.GoName]]) } }/>
 					[[end]]

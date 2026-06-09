@@ -26,8 +26,52 @@ var goKeywords = map[string]bool{
 }
 
 // autoManagedFields are always injected — users must not declare them.
+// Checked against the field name normalized to lowercase with underscores
+// removed, so spellings like "Id", "ID" or "createdAt" are caught too: they
+// would produce the same Go struct field (ID/CreatedAt/UpdatedAt) or, on
+// SQLite's case-insensitive columns, a duplicate column.
 var autoManagedFields = map[string]bool{
-	"id": true, "created_at": true, "updated_at": true,
+	"id": true, "createdat": true, "updatedat": true,
+}
+
+// sqlReservedWords are identifiers that cannot be used unquoted as column or
+// table names in SQLite and/or Postgres. The generated SQL never quotes
+// identifiers, so these are rejected with a clear error instead of producing
+// migrations and queries that fail at runtime.
+var sqlReservedWords = map[string]bool{
+	"abort": true, "action": true, "add": true, "after": true, "all": true,
+	"alter": true, "analyze": true, "and": true, "any": true, "as": true,
+	"asc": true, "attach": true, "autoincrement": true, "before": true,
+	"begin": true, "between": true, "both": true, "by": true, "cascade": true,
+	"case": true, "cast": true, "check": true, "collate": true, "column": true,
+	"commit": true, "conflict": true, "constraint": true, "create": true,
+	"cross": true, "current_date": true, "current_time": true,
+	"current_timestamp": true, "current_user": true, "database": true,
+	"default": true, "deferrable": true, "deferred": true, "delete": true,
+	"desc": true, "detach": true, "distinct": true, "do": true, "drop": true,
+	"each": true, "else": true, "end": true, "escape": true, "except": true,
+	"exclusive": true, "exists": true, "explain": true, "fail": true,
+	"filter": true, "for": true, "foreign": true, "from": true, "full": true,
+	"glob": true, "group": true, "having": true, "ignore": true,
+	"immediate": true, "in": true, "index": true, "indexed": true,
+	"initially": true, "inner": true, "insert": true, "instead": true,
+	"intersect": true, "into": true, "is": true, "isnull": true, "join": true,
+	"key": true, "lateral": true, "leading": true, "left": true, "like": true,
+	"limit": true, "localtime": true, "localtimestamp": true, "match": true,
+	"natural": true, "no": true, "not": true, "notnull": true, "null": true,
+	"of": true, "offset": true, "on": true, "only": true, "or": true,
+	"order": true, "outer": true, "over": true, "partition": true,
+	"plan": true, "pragma": true, "primary": true, "query": true,
+	"raise": true, "recursive": true, "references": true, "regexp": true,
+	"reindex": true, "release": true, "rename": true, "replace": true,
+	"restrict": true, "right": true, "rollback": true, "row": true,
+	"rows": true, "savepoint": true, "session_user": true, "set": true,
+	"some": true, "table": true, "temp": true, "temporary": true,
+	"then": true, "to": true, "trailing": true, "transaction": true,
+	"trigger": true, "union": true, "unique": true, "update": true,
+	"user": true, "using": true, "vacuum": true, "values": true, "view": true,
+	"virtual": true, "when": true, "where": true, "window": true, "with": true,
+	"without": true,
 }
 
 // typeMap maps CLI type aliases to canonical Go and SQL types.
@@ -156,6 +200,9 @@ func parseField(arg string) (Field, error) {
 		case strings.HasPrefix(m, "default="):
 			filtered = append(filtered, m)
 		case strings.HasPrefix(m, "fk="):
+			if err := validateSQLIdentifier("fk= target table", strings.TrimPrefix(m, "fk=")); err != nil {
+				return Field{}, fmt.Errorf("field %q: %w", name, err)
+			}
 			filtered = append(filtered, m)
 		case strings.HasPrefix(m, "check="):
 			filtered = append(filtered, m)
@@ -206,13 +253,32 @@ func parseField(arg string) (Field, error) {
 }
 
 // splitModifiers splits a comma-separated modifier list, trimming blanks.
+// Commas inside parentheses do not split, so expressions like
+// check=status IN ('a','b') survive as a single modifier.
 func splitModifiers(s string) []string {
 	var mods []string
-	for _, m := range strings.Split(s, ",") {
-		if m = strings.TrimSpace(m); m != "" {
+	depth, start := 0, 0
+	flush := func(end int) {
+		if m := strings.TrimSpace(s[start:end]); m != "" {
 			mods = append(mods, m)
 		}
 	}
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				flush(i)
+				start = i + 1
+			}
+		}
+	}
+	flush(len(s))
 	return mods
 }
 
@@ -235,18 +301,48 @@ func validateFieldName(name string) error {
 	if name == "" {
 		return fmt.Errorf("field name cannot be empty")
 	}
-	if autoManagedFields[name] {
-		return fmt.Errorf("field %q is auto-managed (id, created_at, updated_at) — remove it", name)
+	normalized := strings.ReplaceAll(strings.ToLower(name), "_", "")
+	if autoManagedFields[normalized] {
+		return fmt.Errorf("field %q collides with an auto-managed column (id, created_at, updated_at) — remove it", name)
 	}
 	if goKeywords[name] {
 		return fmt.Errorf("field %q is a reserved Go keyword", name)
 	}
-	if !unicode.IsLetter(rune(name[0])) && rune(name[0]) != '_' {
-		return fmt.Errorf("field %q must start with a letter or underscore", name)
+	if sqlReservedWords[strings.ToLower(name)] {
+		return fmt.Errorf("field %q is a reserved SQL keyword and would generate invalid SQL — pick another name (e.g. %s_value)", name, name)
 	}
-	for _, r := range name {
+	for i, r := range name {
+		if i == 0 {
+			if !unicode.IsLetter(r) && r != '_' {
+				return fmt.Errorf("field %q must start with a letter or underscore", name)
+			}
+			continue
+		}
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
 			return fmt.Errorf("field %q must contain only alphanumeric characters and underscores", name)
+		}
+	}
+	return nil
+}
+
+// validateSQLIdentifier checks a user-supplied SQL identifier (fk= target,
+// --table-name) that is interpolated unquoted into generated SQL.
+func validateSQLIdentifier(kind, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s cannot be empty", kind)
+	}
+	if sqlReservedWords[strings.ToLower(name)] {
+		return fmt.Errorf("%s %q is a reserved SQL keyword", kind, name)
+	}
+	for i, r := range name {
+		if i == 0 {
+			if !unicode.IsLetter(r) && r != '_' {
+				return fmt.Errorf("%s %q must start with a letter or underscore", kind, name)
+			}
+			continue
+		}
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			return fmt.Errorf("%s %q must contain only alphanumeric characters and underscores", kind, name)
 		}
 	}
 	return nil

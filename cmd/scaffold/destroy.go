@@ -20,6 +20,7 @@ Routes are removed from app.go automatically.
 
 FILES DELETED
   Always (all modes):
+    internal/core/domain/{model}_gen.go
     internal/core/domain/{model}.go
     internal/core/ports/{model}.go
     internal/core/services/{model}_service_gen.go
@@ -73,7 +74,7 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("model %q not found in manifest", modelName)
 	}
 
-	model, err := parser.ModelFromEntry(modelName, entry)
+	model, err := parser.ModelFromEntry(modelName, entry, manifest)
 	if err != nil {
 		return err
 	}

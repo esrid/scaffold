@@ -246,7 +246,6 @@ func TestBuildModel_ExistingModel_NoFieldsPreserved(t *testing.T) {
 	}
 }
 
-
 func TestBuildModel_TableNameOverride(t *testing.T) {
 	manifest := &Manifest{Models: map[string]ManifestModel{}}
 	fields, _ := ParseFields([]string{"name:string!"})
@@ -358,13 +357,13 @@ func TestDiffFields_NoChange(t *testing.T) {
 
 func TestParseFields_AllTypes(t *testing.T) {
 	cases := []struct {
-		input    string
-		goType   string
-		sqlType  string
-		notNull  bool
+		input   string
+		goType  string
+		sqlType string
+		notNull bool
 	}{
 		{"name:string!", "string", "TEXT", true},
-		{"desc:string", "*string", "TEXT", false},
+		{"summary:string", "*string", "TEXT", false},
 		{"count:int!", "int", "INTEGER", true},
 		{"qty:int", "*int", "INTEGER", false},
 		{"score:float!", "float64", "REAL", true},
@@ -502,4 +501,3 @@ func TestBuildModel_MigrationVersionShouldBeGloballyUnique(t *testing.T) {
 		t.Errorf("expected migration version to be globally unique (greater than 5), got %d", model.MigrationVersion)
 	}
 }
-

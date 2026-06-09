@@ -62,6 +62,7 @@ scaffold init [dir] --module <path> [--db sqlite|postgres] [--api ssr|rest|grpc]
 | `--api` | `ssr` | API mode: `ssr`, `rest`, or `grpc` |
 
 `dir` defaults to the last segment of `--module`. Runs `go mod tidy` automatically.
+Refuses to scaffold into a non-empty directory (a lone `.git/` or other dotfiles are fine).
 
 | Mode | What you get |
 |------|-------------|
@@ -79,7 +80,10 @@ Generate or update the full CRUD scaffold for a model. Routes are mounted automa
 scaffold gen <Model> [field:type{modifier}!...] [--remove <field>...] [--dry-run] [--table-name <name>] [--no-handler]
 ```
 
-Running `gen` again on an existing model **merges** the fields you pass into the stored set: a field name that already exists is updated in place, a new name is **added**, and fields you don't mention are **kept**. Passing a subset never drops columns. To drop a field, name it with `--remove`. Each change writes a diff migration; your hand-written files are never overwritten.
+Running `gen` again on an existing model **merges** the fields you pass into the stored set: a field name that already exists is updated in place, a new name is **added**, and fields you don't mention are **kept**. Passing a subset never drops columns. To drop a field, name it with `--remove`. Adding/removing fields writes a diff migration; your hand-written files are never overwritten.
+
+> [!WARNING]
+> Changing the **type or modifiers** of an existing field updates the generated code and `schema.sql` but writes **no migration** (column type changes are DB-specific and lossy). scaffold prints a warning listing the changed fields — write the `ALTER TABLE` yourself in `internal/adapters/store/migrations/`.
 
 | Flag | Description |
 |------|-------------|
@@ -126,27 +130,36 @@ name:[]type!           prefix-bracket arrays
 | `json` | `json.RawMessage` | `TEXT` | `JSONB` |
 | `[]<type>` (or `<type>,array`) | Go slice (e.g. `[]string`) | JSON-encoded `TEXT` | native array (e.g. `TEXT[]`) |
 
-`id`, `created_at`, `updated_at` are auto-managed — do not declare them.
+`id`, `created_at`, `updated_at` are auto-managed — do not declare them
+(variant spellings like `Id` or `createdAt` are rejected too). Field names that
+are SQL reserved words (`order`, `user`, `group`, `to`, …) are rejected with a
+clear error, since the generated SQL does not quote identifiers.
 
 **Array fields** can be declared using either the shell-safe `<type>,array` suffix (e.g. `tags:string,array!`, `scores:int,array`) or the legacy `[]<type>` prefix (e.g. `tags:[]string!`, `scores:[]int`).
 Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool` (not `time` or `json`). Stored as a native array on Postgres and a JSON-encoded `TEXT` column on SQLite.
 
 > [!NOTE]
-> **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}.go`.
+> **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}_gen.go`.
 
 #### Modifiers
 
 | Modifier | SQL emitted |
 |----------|-------------|
 | `nn` | `NOT NULL` — alias for `!` |
-| `unique` | `UNIQUE` |
-| `index` | separate `CREATE INDEX` |
+| `unique` | `UNIQUE` (separate `CREATE UNIQUE INDEX` in SQLite ALTER migrations, which reject inline UNIQUE) |
+| `index` | separate `CREATE INDEX` (GIN index on Postgres for json/array fields) |
 | `<n>` | `VARCHAR(n)` (string/text only) |
-| `default=val` | `DEFAULT 'val'` |
-| `fk=table` | `REFERENCES table(id)` |
+| `default=val` | `DEFAULT 'val'` — numbers, `true`/`false`, `null` and `CURRENT_*` are emitted unquoted; embedded `'` are escaped |
+| `fk=table` | `REFERENCES table(id)` — target validated as a SQL identifier |
 | `cascade` | `ON DELETE CASCADE` (used with `fk=`) |
 | `setnull` | `ON DELETE SET NULL` (used with `fk=`) |
-| `check=expr` | `CHECK (expr)` |
+| `check=expr` | `CHECK (expr)` — commas inside parens are safe: `check=status IN ('a','b')` |
+
+**Migration safety:** adding a NOT NULL field to an existing model emits
+`ALTER TABLE … ADD COLUMN … DEFAULT <zero>` (`''`, `0`, `FALSE`,
+`CURRENT_TIMESTAMP`, `'[]'`/`'{}'`) so the migration applies cleanly on both
+SQLite and Postgres even with existing rows. Indexes for added columns are
+created (and dropped before `DROP COLUMN`) in the same migration.
 
 #### Examples
 
@@ -215,7 +228,7 @@ myapp/
         ├── layout.templ                   # shared page layout component
         ├── home.templ
         ├── helpers.go                     # display/truthy template helpers
-        └── {model}.templ                  # List/Form/Show components (regenerated)
+        └── {model}.templ                  # List/Form/Show components (write-once — yours)
 ```
 
 > templ compiles `.templ` files to Go. Run `make generate` (or `templ generate`)
@@ -227,6 +240,7 @@ Same as SSR, except:
 - `internal/adapters/http/crud_handler.go` — generic `CRUDHandler[T]` (no per-model handler)
 - `web/src/` + `web/dist/` — TypeScript/esbuild frontend scaffold instead of templates
 - Routes: `GET /api/{plural}`, `POST /api/{plural}`, `PUT /api/{plural}/{id}`, etc.
+- `GET /api/{plural}` returns newest-first and accepts `?limit=` (default 20, max 100) and `?offset=`
 
 ### gRPC mode (REST + gRPC)
 
@@ -244,17 +258,19 @@ Run `make proto` after `scaffold gen` to compile `.proto` → Go pb package.
 
 | File | Behaviour |
 |------|-----------|
-| `domain/{model}.go` | Struct fields patched via markers (sorted descending by byte size for memory alignment / struct packing); `Validate()` is yours |
+| `domain/{model}_gen.go` | Always regenerated — struct (sorted descending by byte size for struct packing) + `GetID`/`WithID` |
+| `domain/{model}.go` | Yours — `Validate()` and custom methods, written once |
 | `ports/{model}.go` | Written once, never touched |
 | `services/{model}_service_gen.go` | Always regenerated |
 | `services/{model}_service.go` | Yours — never overwritten |
 | `store/{model}_store_gen.go` | Always regenerated |
 | `store/{model}_store.go` | Yours — never overwritten |
-| `app/registry.go` | Always regenerated |
-| `app/app.go` (route block) | Routes section regenerated; rest is yours |
+| `app/registry.go` | Always regenerated (models sorted — output is deterministic) |
+| `app/routes_gen.go` | Always regenerated — `app.go` itself is yours |
+| `app/custom.go` | Yours — wire custom services with access to `cfg` + registry |
 | `http/{model}_handler_gen.go` | SSR only — always regenerated |
 | `http/{model}_handler.go` | SSR only — yours |
-| `web/views/{model}.templ` | SSR only — always regenerated on field changes |
+| `web/views/{model}.templ` | SSR only — written once, yours (`--regen-views` to refresh) |
 | `adapters/grpc/{model}_handler_gen.go` | gRPC only — always regenerated |
 | `adapters/grpc/shared.go` | gRPC only — written once |
 | `internal/adapters/grpc/pb/{model}.proto` | gRPC only — always regenerated |

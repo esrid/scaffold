@@ -6,11 +6,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"{{.Module}}/internal/core/domain"
 	"{{.Module}}/internal/core/ports"
 	"github.com/go-chi/chi/v5"
+)
+
+const (
+	defaultListLimit = 20
+	maxListLimit     = 100
 )
 
 // CRUDOps selects which REST routes a handler registers. The zero value
@@ -80,12 +86,26 @@ func (h *CRUDHandler[T]) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *CRUDHandler[T]) List(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.List(r.Context(), 10, 0)
+	limit, offset := listParams(r)
+	items, err := h.service.List(r.Context(), limit, offset)
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, items)
+}
+
+// listParams reads ?limit= and ?offset=, clamping to sane bounds so a bad or
+// malicious query string can never produce an unbounded scan.
+func listParams(r *http.Request) (limit, offset int) {
+	limit = defaultListLimit
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = min(v, maxListLimit)
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v > 0 {
+		offset = v
+	}
+	return limit, offset
 }
 
 func (h *CRUDHandler[T]) Create(w http.ResponseWriter, r *http.Request) {

@@ -22,6 +22,12 @@ type Model struct {
 	PrevFields []Field
 	// Next goose migration version number.
 	MigrationVersion int
+	// ScaffoldedAt is when the model was first generated (preserved across re-gens).
+	ScaffoldedAt time.Time
+	// ChangedFields lists fields whose definition (type, nullability or
+	// modifiers) changed in place on re-gen. No ALTER migration is generated
+	// for these — the CLI warns that a hand-written migration is needed.
+	ChangedFields []string
 }
 
 var pluralizeClient = pluralize.NewClient()
@@ -41,6 +47,8 @@ func BuildModel(name string, fields []Field, removeFields []string, manifest *Ma
 
 	if tableName == "" {
 		tableName = pluralizeClient.Plural(strings.ToLower(name))
+	} else if err := validateSQLIdentifier("--table-name", tableName); err != nil {
+		return nil, err
 	}
 
 	m := &Model{
@@ -56,11 +64,13 @@ func BuildModel(name string, fields []Field, removeFields []string, manifest *Ma
 		m.PrevFields = manifestFieldsToFields(existing.Fields)
 		m.Ops = OpsFromSkipped(existing.SkippedOps) // preserve prior op selection
 		m.NoHandler = noHandler || existing.NoHandler
+		m.ScaffoldedAt = existing.ScaffoldedAt
 		merged, err := mergeFields(m.PrevFields, fields, removeFields)
 		if err != nil {
 			return nil, err
 		}
 		m.Fields = merged
+		m.ChangedFields = changedFieldNames(m.PrevFields, fields)
 		added, removed := m.DiffFields()
 		if len(added) > 0 || len(removed) > 0 {
 			m.MigrationVersion = nextMigrationVersion(manifest)
@@ -135,15 +145,54 @@ func mergeFields(prev, passed []Field, removeFields []string) ([]Field, error) {
 	return merged, nil
 }
 
-// ModelFromEntry rebuilds a Model from a manifest entry (used by destroy).
-func ModelFromEntry(name string, entry ManifestModel) (*Model, error) {
+// changedFieldNames returns the names of passed fields that already existed
+// but whose definition (Go/SQL type, nullability or modifiers) differs from
+// the stored one. These are updated in code and schema.sql but get no ALTER
+// migration, so callers should surface a warning.
+func changedFieldNames(prev, passed []Field) []string {
+	prevByName := map[string]Field{}
+	for _, f := range prev {
+		prevByName[f.Name] = f
+	}
+	var changed []string
+	for _, f := range passed {
+		old, ok := prevByName[f.Name]
+		if !ok {
+			continue
+		}
+		if old.GoType != f.GoType || old.SQLType != f.SQLType ||
+			old.NotNull != f.NotNull || !equalStrings(old.Modifiers, f.Modifiers) {
+			changed = append(changed, f.Name)
+		}
+	}
+	return changed
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ModelFromEntry rebuilds a Model from a manifest entry (used by destroy). The
+// DROP migration version is computed disk-aware (highest on-disk migration + 1),
+// not from the model's own counter, so destroy can't collide with unrelated
+// migrations added after this model (e.g. another model's create).
+func ModelFromEntry(name string, entry ManifestModel, manifest *Manifest) (*Model, error) {
 	return &Model{
 		Name:             name,
 		Fields:           manifestFieldsToFields(entry.Fields),
 		TableName:        entry.TableName,
 		IsNew:            false,
-		MigrationVersion: entry.MigrationVersion + 1,
+		MigrationVersion: nextMigrationVersion(manifest),
 		NoHandler:        entry.NoHandler,
+		ScaffoldedAt:     entry.ScaffoldedAt,
 	}, nil
 }
 
@@ -160,9 +209,14 @@ func (m *Model) ManifestEntry() ManifestModel {
 		}
 	}
 	now := time.Now()
+	scaffoldedAt := m.ScaffoldedAt
+	if scaffoldedAt.IsZero() {
+		scaffoldedAt = now
+	}
 	return ManifestModel{
 		Fields:           fields,
 		TableName:        m.TableName,
+		ScaffoldedAt:     scaffoldedAt,
 		UpdatedAt:        now,
 		MigrationVersion: m.MigrationVersion,
 		NoHandler:        m.NoHandler,
@@ -219,10 +273,10 @@ func validateModelName(name string) error {
 	if name == "" {
 		return fmt.Errorf("model name cannot be empty")
 	}
-	if !unicode.IsUpper(rune(name[0])) {
-		return fmt.Errorf("model name %q must start with an uppercase letter", name)
-	}
-	for _, r := range name {
+	for i, r := range name {
+		if i == 0 && !unicode.IsUpper(r) {
+			return fmt.Errorf("model name %q must start with an uppercase letter", name)
+		}
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
 			return fmt.Errorf("model name %q must contain only alphanumeric characters and underscores", name)
 		}
