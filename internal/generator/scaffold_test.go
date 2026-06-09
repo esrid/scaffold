@@ -47,7 +47,7 @@ func genModel(t *testing.T, manifest *parser.Manifest, name string, fields ...st
 	if err != nil {
 		t.Fatalf("ParseFields: %v", err)
 	}
-	model, err := parser.BuildModel(name, fs, nil, manifest, "")
+	model, err := parser.BuildModel(name, fs, nil, manifest, "", false)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
@@ -598,6 +598,56 @@ func TestScaffold_StructPacking(t *testing.T) {
 		if idx1 > idx2 {
 			t.Errorf("field %q (index %d) should come before %q (index %d) in domain struct fields block", expectedOrder[i], idx1, expectedOrder[i+1], idx2)
 		}
+	}
+}
+
+func TestScaffold_NoHandler_SkipsHTTP(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "ssr")
+	fs, err := parser.ParseFields([]string{"name:string!"})
+	if err != nil {
+		t.Fatalf("ParseFields: %v", err)
+	}
+	model, err := parser.BuildModel("Product", fs, nil, manifest, "", true)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	// Write mock app.go with route markers
+	appDir := filepath.Join(root, "internal", "app")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatalf("mkdir app: %v", err)
+	}
+	appMock := `package app
+func mountRoutes() {
+	// scaffold:routes:start
+	// scaffold:routes:end
+}`
+	if err := os.WriteFile(filepath.Join(appDir, "app.go"), []byte(appMock), 0644); err != nil {
+		t.Fatalf("write mock app.go: %v", err)
+	}
+
+	runScaffold(t, root, manifest, model)
+
+	// Verify store & service are created
+	assertExists(t, root, "internal/core/domain/product.go")
+	assertExists(t, root, "internal/core/ports/product.go")
+	assertExists(t, root, "internal/core/services/product_service_gen.go")
+	assertExists(t, root, "internal/adapters/store/product_store_gen.go")
+
+	// Verify handlers are NOT created
+	assertNotExists(t, root, "internal/adapters/http/product_handler_gen.go")
+	assertNotExists(t, root, "internal/adapters/http/product_handler.go")
+	assertNotExists(t, root, "web/views/product.templ")
+
+	// Verify registry.go does not reference the Handler
+	registry := assertExists(t, root, "internal/app/registry.go")
+	if strings.Contains(registry, "Handlers.Product") || strings.Contains(registry, "httpadapter.NewProductHandler") {
+		t.Error("expected registry.go to not reference Product Handler")
+	}
+
+	// Verify app.go does not mount routes for Product
+	appFile := assertExists(t, root, "internal/app/app.go")
+	if strings.Contains(appFile, "registry.Handlers.Product") {
+		t.Error("expected app.go to not mount Product routes")
 	}
 }
 

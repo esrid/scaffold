@@ -13,6 +13,7 @@ var (
 	dryRun       bool
 	tableName    string
 	removeFields []string
+	noHandler    bool
 )
 
 var genCmd = &cobra.Command{
@@ -143,6 +144,7 @@ func init() {
 	genCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
 	genCmd.Flags().StringVar(&tableName, "table-name", "", "Override auto-pluralized table name")
 	genCmd.Flags().StringSliceVar(&removeFields, "remove", nil, "Field name(s) to drop from an existing model (comma-separated or repeated)")
+	genCmd.Flags().BoolVar(&noHandler, "no-handler", false, "Skip generating HTTP/gRPC handlers and routes")
 	rootCmd.AddCommand(genCmd)
 }
 
@@ -170,7 +172,7 @@ func runGen(cmd *cobra.Command, args []string) error {
 	}
 	manifest.Module = modulePath
 
-	model, err := parser.BuildModel(modelName, fields, removeFields, manifest, tableName)
+	model, err := parser.BuildModel(modelName, fields, removeFields, manifest, tableName, noHandler)
 	if err != nil {
 		return err
 	}

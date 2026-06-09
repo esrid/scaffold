@@ -60,7 +60,8 @@ type serviceGenCtx struct {
 
 // registryModel is one model entry in the registry template.
 type registryModel struct {
-	Name string
+	Name      string
+	NoHandler bool
 }
 
 // registryCtx is the data passed to registryTmpl.

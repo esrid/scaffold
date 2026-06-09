@@ -76,7 +76,7 @@ scaffold init [dir] --module <path> [--db sqlite|postgres] [--api ssr|rest|grpc]
 Generate or update the full CRUD scaffold for a model. Routes are mounted automatically in `app.go`.
 
 ```
-scaffold gen <Model> [field:type{modifier}!...] [--remove <field>...] [--dry-run] [--table-name <name>]
+scaffold gen <Model> [field:type{modifier}!...] [--remove <field>...] [--dry-run] [--table-name <name>] [--no-handler]
 ```
 
 Running `gen` again on an existing model **merges** the fields you pass into the stored set: a field name that already exists is updated in place, a new name is **added**, and fields you don't mention are **kept**. Passing a subset never drops columns. To drop a field, name it with `--remove`. Each change writes a diff migration; your hand-written files are never overwritten.
@@ -86,6 +86,7 @@ Running `gen` again on an existing model **merges** the fields you pass into the
 | `--remove` | Drop field(s) from an existing model (comma-separated or repeated). Writes a `DROP COLUMN` migration |
 | `--dry-run` | Preview changes without writing files |
 | `--table-name` | Override the auto-pluralized table name (e.g. `people` for `Person`) |
+| `--no-handler` | Skip generating HTTP/gRPC handlers and routes (allows pure service/domain models) |
 
 #### Field syntax
 

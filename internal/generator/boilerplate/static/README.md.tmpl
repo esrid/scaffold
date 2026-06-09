@@ -81,6 +81,9 @@ scaffold gen Article title:string! body:string! views:int published:bool!
 # Remove a model
 scaffold destroy Article
 
+# Add a model without generating HTTP/gRPC handlers
+scaffold gen Article title:string! body:string! --no-handler
+
 # Preview without writing
 scaffold gen Article title:string! --dry-run
 ```

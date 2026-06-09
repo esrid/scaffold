@@ -172,7 +172,7 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 		filepath.Join("internal", "adapters", "store", model.Snake()+"_store_gen.go"),
 		filepath.Join("internal", "adapters", "store", model.Snake()+"_store.go"),
 	}
-	if g.isSSR() {
+	if !model.NoHandler && g.isSSR() {
 		files = append(files,
 			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"),
 			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go"),
@@ -190,7 +190,7 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 			res.Deleted = append(res.Deleted, rel)
 		}
 	}
-	if g.isGRPC() {
+	if !model.NoHandler && g.isGRPC() {
 		files = append(files,
 			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto"),
 			// buf-generated code derived from the .proto — orphaned once it is gone.
@@ -305,7 +305,7 @@ func (g *Generator) scaffoldCreate(model *parser.Model, res *Result) error {
 		return err
 	}
 
-	if g.isSSR() {
+	if !model.NoHandler && g.isSSR() {
 		// internal/adapters/http/{model}_handler_gen.go — always regenerated
 		ssrHandlerPath := filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go")
 		if err := g.writeSSRHandler(ssrHandlerPath, model, res); err != nil {
@@ -324,7 +324,7 @@ func (g *Generator) scaffoldCreate(model *parser.Model, res *Result) error {
 		}
 	}
 
-	if g.isGRPC() {
+	if !model.NoHandler && g.isGRPC() {
 		// internal/adapters/grpc/pb/{model}.proto — generated .pb.go lands
 		// here too (buf source_relative), matching the pb import path.
 		protoPath := filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto")
@@ -401,7 +401,7 @@ func (g *Generator) scaffoldUpdate(model *parser.Model, res *Result) error {
 		}
 	}
 
-	if g.isSSR() {
+	if !model.NoHandler && g.isSSR() {
 		// Regenerate SSR handler and templates on every update (fields may have changed)
 		ssrHandlerPath := filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go")
 		if err := g.writeSSRHandler(ssrHandlerPath, model, res); err != nil {
@@ -414,7 +414,7 @@ func (g *Generator) scaffoldUpdate(model *parser.Model, res *Result) error {
 		res.Unchanged = append(res.Unchanged, ssrUserPath)
 	}
 
-	if g.isGRPC() {
+	if !model.NoHandler && g.isGRPC() {
 		// Regenerate proto + handler on every update (fields may have changed).
 		// Run `make proto` afterwards to recompile the pb package.
 		protoPath := filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto")
@@ -930,8 +930,8 @@ func renderTemplateHTML(tmplStr string, data any) (string, error) {
 
 func (g *Generator) writeRegistry(res *Result) error {
 	models := make([]registryModel, 0, len(g.manifest.Models))
-	for name := range g.manifest.Models {
-		models = append(models, registryModel{Name: name})
+	for name, entry := range g.manifest.Models {
+		models = append(models, registryModel{Name: name, NoHandler: entry.NoHandler})
 	}
 
 	rel := filepath.Join("internal", "app", "registry.go")
@@ -976,6 +976,9 @@ func (g *Generator) writeRoutes(res *Result) error {
 	// Build the route block content
 	var lines strings.Builder
 	for _, name := range names {
+		if entry, ok := g.manifest.Models[name]; ok && entry.NoHandler {
+			continue
+		}
 		if g.isSSR() {
 			fmt.Fprintf(&lines, "\t\tr.Mount(a.registry.Handlers.%s.Prefix(), a.registry.Handlers.%s.Router())\n", name, name)
 		} else {
@@ -998,6 +1001,9 @@ func (g *Generator) writeRoutes(res *Result) error {
 	if g.isGRPC() {
 		var grpcLines strings.Builder
 		for _, name := range names {
+			if entry, ok := g.manifest.Models[name]; ok && entry.NoHandler {
+				continue
+			}
 			fmt.Fprintf(&grpcLines, "\ta.registry.GRPCHandlers.%s.Register(a.grpcServer)\n", name)
 		}
 		const grpcStart = "// scaffold:grpc:start"

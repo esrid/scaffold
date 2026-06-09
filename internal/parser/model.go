@@ -15,6 +15,7 @@ type Model struct {
 	Fields    []Field
 	TableName string // "products"
 	IsNew     bool   // false if already in manifest (UPDATE mode)
+	NoHandler bool
 
 	// Previous fields from manifest — used to diff for migrations.
 	PrevFields []Field
@@ -32,7 +33,7 @@ var pluralizeClient = pluralize.NewClient()
 // and any field whose name appears in removeFields is dropped. Fields that are
 // neither passed nor removed are preserved — passing a subset never silently
 // drops columns.
-func BuildModel(name string, fields []Field, removeFields []string, manifest *Manifest, tableName string) (*Model, error) {
+func BuildModel(name string, fields []Field, removeFields []string, manifest *Manifest, tableName string, noHandler bool) (*Model, error) {
 	if err := validateModelName(name); err != nil {
 		return nil, err
 	}
@@ -44,12 +45,14 @@ func BuildModel(name string, fields []Field, removeFields []string, manifest *Ma
 	m := &Model{
 		Name:      name,
 		TableName: tableName,
+		NoHandler: noHandler,
 	}
 
 	existing, exists := manifest.Models[name]
 	if exists {
 		m.IsNew = false
 		m.PrevFields = manifestFieldsToFields(existing.Fields)
+		m.NoHandler = noHandler || existing.NoHandler
 		merged, err := mergeFields(m.PrevFields, fields, removeFields)
 		if err != nil {
 			return nil, err
@@ -137,6 +140,7 @@ func ModelFromEntry(name string, entry ManifestModel) (*Model, error) {
 		TableName:        entry.TableName,
 		IsNew:            false,
 		MigrationVersion: entry.MigrationVersion + 1,
+		NoHandler:        entry.NoHandler,
 	}, nil
 }
 
@@ -158,6 +162,7 @@ func (m *Model) ManifestEntry() ManifestModel {
 		TableName:        m.TableName,
 		UpdatedAt:        now,
 		MigrationVersion: m.MigrationVersion,
+		NoHandler:        m.NoHandler,
 	}
 }
 

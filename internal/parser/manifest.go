@@ -33,12 +33,12 @@ func (m *Manifest) IsREST() bool { return m.APIMode == "rest" || (m.APIMode == "
 
 // ManifestModel stores the field snapshot and metadata for a model.
 type ManifestModel struct {
-	Fields       []ManifestField `json:"fields"`
-	TableName    string          `json:"tableName"`
-	ScaffoldedAt time.Time       `json:"scaffoldedAt"`
-	UpdatedAt    time.Time       `json:"updatedAt"`
-	// MigrationVersion tracks the last goose version number used.
-	MigrationVersion int `json:"migrationVersion"`
+	Fields           []ManifestField `json:"fields"`
+	TableName        string          `json:"tableName"`
+	ScaffoldedAt     time.Time       `json:"scaffoldedAt"`
+	UpdatedAt        time.Time       `json:"updatedAt"`
+	MigrationVersion int             `json:"migrationVersion"`
+	NoHandler        bool            `json:"noHandler,omitempty"`
 }
 
 // ManifestField is a serializable snapshot of a Field.

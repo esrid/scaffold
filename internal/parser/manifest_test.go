@@ -165,6 +165,7 @@ func TestBuildModel_NewModel(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
@@ -200,6 +201,7 @@ func TestBuildModel_ExistingModel(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
@@ -234,6 +236,7 @@ func TestBuildModel_ExistingModel_NoFieldsPreserved(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
@@ -253,6 +256,7 @@ func TestBuildModel_TableNameOverride(t *testing.T) {
 		nil,
 		manifest,
 		"people",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
@@ -271,6 +275,7 @@ func TestBuildModel_RejectsReservedName(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err == nil {
 		t.Error("expected error for reserved Go keyword model name")
@@ -285,6 +290,7 @@ func TestBuildModel_RejectsLowercaseName(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err == nil {
 		t.Error("expected error for lowercase model name")
@@ -313,6 +319,7 @@ func TestDiffFields_AddedAndRemoved(t *testing.T) {
 		[]string{"body"},
 		manifest,
 		"articles",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
@@ -339,6 +346,7 @@ func TestDiffFields_NoChange(t *testing.T) {
 		nil,
 		manifest,
 		"tags",
+		false,
 	)
 	added, removed := model.DiffFields()
 	if len(added) != 0 || len(removed) != 0 {
@@ -435,6 +443,7 @@ func TestBuildModel_NewModel_NoFieldsErrors(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err == nil {
 		t.Error("expected error when building a new model with no fields")
@@ -450,6 +459,7 @@ func TestBuildModel_InvalidModelNameCharacters(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err == nil {
 		t.Error("expected error for model name with invalid hyphen character")
@@ -483,6 +493,7 @@ func TestBuildModel_MigrationVersionShouldBeGloballyUnique(t *testing.T) {
 		nil,
 		manifest,
 		"",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)

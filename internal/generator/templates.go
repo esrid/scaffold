@@ -413,7 +413,9 @@ type Services struct {
 // Handlers groups all entry point HTTP controllers.
 type Handlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *httpadapter.CRUDHandler[domain.{{.Name}}]
+{{- end}}
 {{- end}}
 }
 
@@ -422,7 +424,9 @@ type Handlers struct {
 // GRPCHandlers groups all gRPC server handlers.
 type GRPCHandlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *grpcadapter.{{.Name}}Handler
+{{- end}}
 {{- end}}
 }
 {{- end}}
@@ -457,14 +461,18 @@ func NewRegistry(db *sql.DB, logger *slog.Logger) *Registry {
 
 	handlers := &Handlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: httpadapter.NewCRUDHandler(svcs.{{.Name}}, "{{.Name}}", "", logger),
+{{- end}}
 {{- end}}
 	}
 
 	{{- if .GRPC}}
 	grpcHandlers := &GRPCHandlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: grpcadapter.New{{.Name}}Handler(svcs.{{.Name}}),
+{{- end}}
 {{- end}}
 	}
 	{{- end}}
@@ -642,7 +650,9 @@ type Services struct {
 // Handlers groups all entry point HTTP controllers.
 type Handlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *httpadapter.CRUDHandler[domain.{{.Name}}]
+{{- end}}
 {{- end}}
 }
 
@@ -651,7 +661,9 @@ type Handlers struct {
 // GRPCHandlers groups all gRPC server handlers.
 type GRPCHandlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *grpcadapter.{{.Name}}Handler
+{{- end}}
 {{- end}}
 }
 {{- end}}
@@ -686,14 +698,18 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) *Registry {
 
 	handlers := &Handlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: httpadapter.NewCRUDHandler(svcs.{{.Name}}, "{{.Name}}", "", logger),
+{{- end}}
 {{- end}}
 	}
 
 	{{- if .GRPC}}
 	grpcHandlers := &GRPCHandlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: grpcadapter.New{{.Name}}Handler(svcs.{{.Name}}),
+{{- end}}
 {{- end}}
 	}
 	{{- end}}
@@ -1032,7 +1048,9 @@ type Services struct {
 // Handlers groups all SSR HTTP controllers.
 type Handlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *httpadapter.{{.Name}}Handler
+{{- end}}
 {{- end}}
 }
 
@@ -1041,7 +1059,9 @@ type Handlers struct {
 // GRPCHandlers groups all gRPC server handlers.
 type GRPCHandlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *grpcadapter.{{.Name}}Handler
+{{- end}}
 {{- end}}
 }
 {{- end}}
@@ -1076,14 +1096,18 @@ func NewRegistry(db *sql.DB, logger *slog.Logger) *Registry {
 
 	handlers := &Handlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: httpadapter.New{{.Name}}Handler(svcs.{{.Name}}, logger),
+{{- end}}
 {{- end}}
 	}
 
 	{{- if .GRPC}}
 	grpcHandlers := &GRPCHandlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: grpcadapter.New{{.Name}}Handler(svcs.{{.Name}}),
+{{- end}}
 {{- end}}
 	}
 	{{- end}}
@@ -1137,7 +1161,9 @@ type Services struct {
 // Handlers groups all SSR HTTP controllers.
 type Handlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *httpadapter.{{.Name}}Handler
+{{- end}}
 {{- end}}
 }
 
@@ -1146,7 +1172,9 @@ type Handlers struct {
 // GRPCHandlers groups all gRPC server handlers.
 type GRPCHandlers struct {
 {{- range .Models}}
+{{- if not .NoHandler}}
 	{{.Name}} *grpcadapter.{{.Name}}Handler
+{{- end}}
 {{- end}}
 }
 {{- end}}
@@ -1181,14 +1209,18 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) *Registry {
 
 	handlers := &Handlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: httpadapter.New{{.Name}}Handler(svcs.{{.Name}}, logger),
+{{- end}}
 {{- end}}
 	}
 
 	{{- if .GRPC}}
 	grpcHandlers := &GRPCHandlers{
 {{- range .Models}}
+{{- if not .NoHandler}}
 		{{.Name}}: grpcadapter.New{{.Name}}Handler(svcs.{{.Name}}),
+{{- end}}
 {{- end}}
 	}
 	{{- end}}

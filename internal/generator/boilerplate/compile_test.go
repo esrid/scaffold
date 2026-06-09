@@ -71,7 +71,7 @@ func initAndBuild(t *testing.T, db, apiMode string, models []modelDef) string {
 		if err != nil {
 			t.Fatalf("ParseFields(%v): %v", md.fields, err)
 		}
-		model, err := scaffoldparser.BuildModel(md.name, fields, nil, manifest, "")
+		model, err := scaffoldparser.BuildModel(md.name, fields, nil, manifest, "", false)
 		if err != nil {
 			t.Fatalf("BuildModel(%s): %v", md.name, err)
 		}
