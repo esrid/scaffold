@@ -95,37 +95,34 @@ ROUTES MOUNTED IN app.go
 
 EXAMPLES
   # Basic model
-  scaffold gen Product name:string! price:float! sku:string{unique}
+  scaffold gen Product name:string! price:float! sku:string,unique
 
   # Nullable field (no !) → Go pointer *string
   scaffold gen Article title:string! body:string views:int
 
   # NOT NULL via nn modifier
-  scaffold gen Order status:string{nn,default=pending}
+  scaffold gen Order status:string,default=pending,nn
 
   # VARCHAR(n) — fixed-length string column
-  scaffold gen User username:string{92}! email:string{255,unique}!
+  scaffold gen User username:string,92! email:string,255,unique!
 
   # CHECK constraint
-  scaffold gen Product price:float{check=price>0}! stock:int{check=stock>=0}
+  scaffold gen Product price:float,check=price>0! stock:int,check=stock>=0
 
   # Foreign key with cascade delete
-  scaffold gen Post user_id:string{fk=users,cascade}! title:string!
+  scaffold gen Post user_id:string,fk=users,cascade! title:string!
 
   # Foreign key with set-null on delete
-  scaffold gen Comment author_id:string{fk=users,setnull} body:string!
+  scaffold gen Comment author_id:string,fk=users,setnull body:string!
 
   # FK + cascade + index (modifiers combine freely)
-  scaffold gen Post user_id:string{fk=users,cascade,index}! title:string!
+  scaffold gen Post user_id:string,fk=users,cascade,index! title:string!
 
   # JSON field (JSONB on postgres, TEXT on sqlite)
   scaffold gen Event payload:json! metadata:json
 
   # Array fields (Go []string/[]int; TEXT[] on postgres, JSON TEXT on sqlite)
-  scaffold gen Post title:string! tags:[]string! scores:[]int
-
-  # Same thing, shell-safe (no quoting needed in zsh): comma modifiers + ,array
-  scaffold gen Roadmap parent_id:string,fk=roadmaps,index! title:string! resources:string,array
+  scaffold gen Post title:string! tags:string,array! scores:int,array
 
   # Add a field to an existing model (kept fields stay; generates ALTER TABLE migration)
   scaffold gen Product stock:int
