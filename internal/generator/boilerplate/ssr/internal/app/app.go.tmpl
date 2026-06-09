@@ -38,6 +38,7 @@ type App struct {
 	{{- end}}
 	logger   *slog.Logger
 	registry *Registry
+	custom   *Custom
 	{{- if .GRPC}}
 	grpcServer *grpc.Server
 	{{- end}}
@@ -60,6 +61,12 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 	}
 	{{- end}}
 
+	{{- if eq .DB "postgres"}}
+	registry := NewRegistry(pool, logger)
+	{{- else}}
+	registry := NewRegistry(db, logger)
+	{{- end}}
+
 	return &App{
 		cfg:    cfg,
 		{{- if eq .DB "postgres"}}
@@ -68,11 +75,8 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 		db:     db,
 		{{- end}}
 		logger:   logger,
-		{{- if eq .DB "postgres"}}
-		registry: NewRegistry(pool, logger),
-		{{- else}}
-		registry: NewRegistry(db, logger),
-		{{- end}}
+		registry: registry,
+		custom:   newCustom(cfg, registry, logger),
 	}, nil
 }
 
@@ -88,7 +92,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.grpcServer = grpc.NewServer()
 	healthSrv := health.NewServer()
 	healthpb.RegisterHealthServer(a.grpcServer, healthSrv)
-	// scaffold: register grpc handlers here
+	a.registerGeneratedGRPC()
 	if a.cfg.Env != "production" {
 		reflection.Register(a.grpcServer)
 	}
@@ -161,8 +165,7 @@ func (a *App) mountRoutes(r *chi.Mux) {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 	})
-	// scaffold:routes:start
-	// scaffold:routes:end
+	a.registerGeneratedRoutes(r)
 }
 
 func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {

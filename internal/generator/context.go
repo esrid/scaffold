@@ -25,7 +25,7 @@ type templateField struct {
 	SQLModifiers string
 }
 
-// domainCtx is the data passed to domainTmpl.
+// domainCtx is the data passed to the domain templates (gen + user).
 type domainCtx struct {
 	Name            string
 	Receiver        string
@@ -62,6 +62,7 @@ type serviceGenCtx struct {
 type registryModel struct {
 	Name      string
 	NoHandler bool
+	Ops       parser.Ops
 }
 
 // registryCtx is the data passed to registryTmpl.
@@ -79,7 +80,8 @@ type ssrHandlerCtx struct {
 	Lower        string
 	Plural       string
 	Fields       []templateField
-	NeedsStrconv bool // true when any field requires strconv (int/float/bool)
+	NeedsStrconv bool      // true when any field requires strconv (int/float/bool)
+	Ops          parser.Ops // which CRUD operations to generate
 }
 
 // protoCtx is the data passed to protoTmpl.
@@ -90,6 +92,7 @@ type protoCtx struct {
 	Fields       []templateField
 	CreatedAtIdx int
 	UpdatedAtIdx int
+	Ops          parser.Ops
 }
 
 // grpcHandlerCtx is the data passed to grpcHandlerTmpl.
@@ -99,6 +102,7 @@ type grpcHandlerCtx struct {
 	Lower      string
 	Fields     []templateField
 	NeedsTime  bool // true when a nullable time field needs the "time" import
+	Ops        parser.Ops
 }
 
 // migrationCtx is shared by migration templates.

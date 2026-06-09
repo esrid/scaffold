@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,6 +114,83 @@ func initAndBuild(t *testing.T, db, apiMode string, models []modelDef) string {
 	}
 
 	return dir
+}
+
+// TestCompile_SSR_SkipOps generates an SSR project whose model skips create &
+// delete, then verifies the routes are gone AND the gated handler+templ compile.
+func TestCompile_SSR_SkipOps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping compilation test in short mode")
+	}
+	requiresNetwork(t)
+	requiresTempl(t)
+
+	dir := t.TempDir()
+	const module = "github.com/test/compilechk"
+
+	if err := boilerplate.Generate(dir, module, "sqlite", "ssr"); err != nil {
+		t.Fatalf("boilerplate.Generate: %v", err)
+	}
+	manifest, err := scaffoldparser.LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	manifest.Module, manifest.DB, manifest.APIMode = module, "sqlite", "ssr"
+
+	fields, err := scaffoldparser.ParseFields([]string{"title:string!"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := scaffoldparser.BuildModel("Note", fields, nil, manifest, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.Ops = scaffoldparser.OpsFromSkipped([]string{"create", "delete"})
+	manifest.Models["Note"] = model.ManifestEntry()
+	if _, err := generator.New(dir, module, manifest, false).Scaffold(model); err != nil {
+		t.Fatalf("Scaffold: %v", err)
+	}
+
+	handler, err := os.ReadFile(filepath.Join(dir, "internal/adapters/http/note_handler_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(handler), "h.Create)") || strings.Contains(string(handler), "r.Delete(") {
+		t.Errorf("skipped routes still registered:\n%s", handler)
+	}
+	if !strings.Contains(string(handler), "h.List)") {
+		t.Error("list route should remain")
+	}
+
+	for _, c := range [][]string{{"templ", "generate"}, {"go", "mod", "tidy"}, {"go", "build", "./..."}} {
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v:\n%s\n%v", c, out, err)
+		}
+	}
+}
+
+// TestCompile_InitOnly_SSR verifies a freshly-initialised project (no models)
+// compiles — i.e. the boilerplate's empty routes_gen.go + app.go wiring is valid.
+func TestCompile_InitOnly_SSR(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping compilation test in short mode")
+	}
+	requiresNetwork(t)
+	requiresTempl(t)
+
+	dir := t.TempDir()
+	if err := boilerplate.Generate(dir, "github.com/test/initonly", "sqlite", "ssr"); err != nil {
+		t.Fatalf("boilerplate.Generate: %v", err)
+	}
+	for _, c := range [][]string{{"templ", "generate"}, {"go", "mod", "tidy"}, {"go", "build", "./..."}} {
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v:\n%s\n%v", c, out, err)
+		}
+	}
 }
 
 func TestCompile_SSR_SQLite(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/esrid/scaffold/internal/formatter"
 	"github.com/esrid/scaffold/internal/parser"
+	"github.com/pmezard/go-difflib/difflib"
 )
 
 // Generator writes scaffold files into a target project.
@@ -20,6 +21,14 @@ type Generator struct {
 	modulePath string
 	manifest   *parser.Manifest
 	dryRun     bool
+
+	// RegenViews forces SSR view templates to be overwritten. By default views
+	// are write-once (created if absent, never clobbered) so hand edits survive.
+	RegenViews bool
+
+	// Diff, when set, records a unified diff of every file that would change
+	// instead of writing it. Implies dryRun (no files are touched).
+	Diff bool
 }
 
 // New creates a Generator targeting the given project root.
@@ -99,6 +108,7 @@ type Result struct {
 	Overwritten []string
 	Unchanged   []string
 	Deleted     []string
+	Diffs       []string // unified diffs, populated in --diff mode
 }
 
 // Print writes a human-readable summary to w.
@@ -127,10 +137,37 @@ func (r *Result) Print(w io.Writer) {
 			fmt.Fprintf(w, "  - %s\n", f)
 		}
 	}
+	if len(r.Diffs) > 0 {
+		fmt.Fprintln(w, "\nDiff (no files written):")
+		for _, d := range r.Diffs {
+			fmt.Fprintln(w, d)
+		}
+		return
+	}
 	fmt.Fprintln(w, "\nNext steps:")
 	fmt.Fprintln(w, "  1. Add validation logic in domain file → Validate()")
 	fmt.Fprintln(w, "  2. Add custom queries in store file (below generated section)")
 	fmt.Fprintln(w, "  3. Run: go build ./...")
+}
+
+// recordDiff appends a unified diff of rel (old vs newContent) to res when in
+// --diff mode. No-op otherwise.
+func (g *Generator) recordDiff(rel string, newContent []byte, res *Result) {
+	if !g.Diff {
+		return
+	}
+	old, _ := os.ReadFile(filepath.Join(g.root, rel))
+	d, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(string(old)),
+		B:        difflib.SplitLines(string(newContent)),
+		FromFile: rel + " (current)",
+		ToFile:   rel + " (generated)",
+		Context:  3,
+	})
+	if err != nil || strings.TrimSpace(d) == "" {
+		return
+	}
+	res.Diffs = append(res.Diffs, d)
 }
 
 // Scaffold generates or updates all files for the given model.
@@ -165,6 +202,7 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 	res := &Result{}
 
 	files := []string{
+		filepath.Join("internal", "core", "domain", model.Snake()+"_gen.go"),
 		filepath.Join("internal", "core", "domain", model.Snake()+".go"),
 		filepath.Join("internal", "core", "ports", model.Snake()+".go"),
 		filepath.Join("internal", "core", "services", model.Snake()+"_service_gen.go"),
@@ -244,13 +282,14 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 // ---- CREATE mode ----
 
 func (g *Generator) scaffoldCreate(model *parser.Model, res *Result) error {
-	// domain/{model}.go — full file with markers
-	domainPath := filepath.Join("internal", "core", "domain", model.Snake()+".go")
-	domainTmplToUse := domainTmpl
-	if g.isPostgres() {
-		domainTmplToUse = domainTmplPostgres
+	// domain/{model}_gen.go — struct + identity methods (regenerated, no markers)
+	domainGenPath := filepath.Join("internal", "core", "domain", model.Snake()+"_gen.go")
+	if err := g.writeGoFile(domainGenPath, domainGenTmpl, buildDomainCtx(model, g.modulePath, g.manifest.DB), true, res); err != nil {
+		return err
 	}
-	if err := g.writeGoFile(domainPath, domainTmplToUse, buildDomainCtx(model, g.modulePath, g.manifest.DB), true, res); err != nil {
+	// domain/{model}.go — Validate() + custom methods (created once)
+	domainUserPath := filepath.Join("internal", "core", "domain", model.Snake()+".go")
+	if err := g.writeGoFileOnce(domainUserPath, domainUserTmpl, buildDomainCtx(model, g.modulePath, g.manifest.DB), res); err != nil {
 		return err
 	}
 
@@ -349,11 +388,12 @@ func (g *Generator) scaffoldCreate(model *parser.Model, res *Result) error {
 // ---- UPDATE mode ----
 
 func (g *Generator) scaffoldUpdate(model *parser.Model, res *Result) error {
-	// domain/{model}.go — patch marker blocks only
-	domainPath := filepath.Join("internal", "core", "domain", model.Snake()+".go")
-	if err := g.patchDomainMarkers(domainPath, model, res); err != nil {
+	// domain/{model}_gen.go — regenerated; domain/{model}.go is user-owned.
+	domainGenPath := filepath.Join("internal", "core", "domain", model.Snake()+"_gen.go")
+	if err := g.writeGoFile(domainGenPath, domainGenTmpl, buildDomainCtx(model, g.modulePath, g.manifest.DB), true, res); err != nil {
 		return err
 	}
+	res.Unchanged = append(res.Unchanged, filepath.Join("internal", "core", "domain", model.Snake()+".go"))
 
 	// ports/{model}.go — created once (do not overwrite)
 	portsPath := filepath.Join("internal", "core", "ports", model.Snake()+".go")
@@ -453,6 +493,7 @@ func (g *Generator) writeGoFile(rel, tmplStr string, data any, overwrite bool, r
 		return nil
 	}
 
+	g.recordDiff(rel, formatted, res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
@@ -494,6 +535,7 @@ func (g *Generator) writeStoreGen(rel string, ctx storeGenCtx, res *Result) erro
 	}
 
 	exists := fileExists(abs)
+	g.recordDiff(rel, formatted, res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return err
@@ -520,6 +562,7 @@ func (g *Generator) writeSQLFile(rel, tmplStr string, data any, res *Result) err
 		return fmt.Errorf("%s: %w", rel, err)
 	}
 
+	g.recordDiff(rel, []byte(content), res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return err
@@ -545,9 +588,10 @@ func (g *Generator) addSchemaBlock(model *parser.Model, res *Result) error {
 		return err
 	}
 
+	existing, _ := os.ReadFile(schemaPath)
+	updated := string(existing) + "\n" + block + "\n"
+	g.recordDiff("internal/adapters/store/schema.sql", []byte(updated), res)
 	if !g.dryRun {
-		existing, _ := os.ReadFile(schemaPath)
-		updated := string(existing) + "\n" + block + "\n"
 		if err := os.WriteFile(schemaPath, []byte(updated), 0644); err != nil {
 			return fmt.Errorf("schema.sql: %w", err)
 		}
@@ -581,6 +625,7 @@ func (g *Generator) replaceSchemaBlock(model *parser.Model, res *Result) error {
 		updated = string(data) + "\n" + block + "\n"
 	}
 
+	g.recordDiff("internal/adapters/store/schema.sql", []byte(updated), res)
 	if !g.dryRun {
 		if err := os.WriteFile(schemaPath, []byte(updated), 0644); err != nil {
 			return fmt.Errorf("schema.sql: %w", err)
@@ -605,70 +650,13 @@ func (g *Generator) removeSchemaBlock(model *parser.Model, res *Result) error {
 		return nil // block not found, nothing to do
 	}
 
+	g.recordDiff("internal/adapters/store/schema.sql", []byte(updated), res)
 	if !g.dryRun {
 		if err := os.WriteFile(schemaPath, []byte(updated), 0644); err != nil {
 			return fmt.Errorf("schema.sql: %w", err)
 		}
 	}
 	res.Overwritten = append(res.Overwritten, "internal/adapters/store/schema.sql")
-	return nil
-}
-
-// ---- Domain marker patching ----
-
-func (g *Generator) patchDomainMarkers(rel string, model *parser.Model, res *Result) error {
-	abs := filepath.Join(g.root, rel)
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		// file doesn't exist yet — create it
-		tmpl := domainTmpl
-		if g.isPostgres() {
-			tmpl = domainTmplPostgres
-		}
-		return g.writeGoFile(rel, tmpl, buildDomainCtx(model, g.modulePath, g.manifest.DB), true, res)
-	}
-
-	src := string(data)
-
-	// Replace struct fields block
-	fields := buildTemplateFields(model.Fields, g.manifest.DB)
-	fieldLines := buildFieldLines(fields, g.manifest.DB)
-	src, err = replaceMarkerBlock(src, "// scaffold:fields:start", "// scaffold:fields:end",
-		"// scaffold:fields:start\n"+fieldLines+"// scaffold:fields:end")
-	if err != nil {
-		return fmt.Errorf("domain marker patch (fields): %w", err)
-	}
-
-	// Replace GetID method
-	receiver := model.Receiver()
-	name := model.Name
-	getIDBody := fmt.Sprintf("// scaffold:method:GetID:start\nfunc (%s %s) GetID() string { return %s.ID }\n// scaffold:method:GetID:end",
-		receiver, name, receiver)
-	src, err = replaceMarkerBlock(src, "// scaffold:method:GetID:start", "// scaffold:method:GetID:end", getIDBody)
-	if err != nil {
-		return fmt.Errorf("domain marker patch (GetID): %w", err)
-	}
-
-	// Replace WithID method
-	withIDBody := fmt.Sprintf("// scaffold:method:WithID:start\nfunc (%s %s) WithID(id string) %s { %s.ID = id; return %s }\n// scaffold:method:WithID:end",
-		receiver, name, name, receiver, receiver)
-	src, err = replaceMarkerBlock(src, "// scaffold:method:WithID:start", "// scaffold:method:WithID:end", withIDBody)
-	if err != nil {
-		return fmt.Errorf("domain marker patch (WithID): %w", err)
-	}
-
-	formatted, err := formatter.GoSource(src)
-	if err != nil {
-		return fmt.Errorf("domain format after patch: %w", err)
-	}
-
-	if !g.dryRun {
-		if err := os.WriteFile(abs, formatted, 0644); err != nil {
-			return fmt.Errorf("write %s: %w", rel, err)
-		}
-	}
-
-	res.Overwritten = append(res.Overwritten, rel+" (struct fields updated via markers)")
 	return nil
 }
 
@@ -739,11 +727,13 @@ func (g *Generator) writeProto(rel string, model *parser.Model, res *Result) err
 		Fields:       fields,
 		CreatedAtIdx: len(fields) + 2,
 		UpdatedAtIdx: len(fields) + 3,
+		Ops:          model.Ops,
 	}
 	content, err := renderTemplateWithFuncs(protoTmpl, ctx, protoTemplateFuncs())
 	if err != nil {
 		return fmt.Errorf("%s: %w", rel, err)
 	}
+	g.recordDiff(rel, []byte(content), res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
@@ -774,6 +764,7 @@ func (g *Generator) writeGRPCHandler(rel string, model *parser.Model, res *Resul
 		Lower:      model.Lower(),
 		Fields:     fields,
 		NeedsTime:  needsTime,
+		Ops:        model.Ops,
 	}
 	src, err := renderTemplateWithFuncs(grpcHandlerTmpl, ctx, protoTemplateFuncs())
 	if err != nil {
@@ -784,6 +775,7 @@ func (g *Generator) writeGRPCHandler(rel string, model *parser.Model, res *Resul
 		return fmt.Errorf("%s: %w", rel, err)
 	}
 	abs := filepath.Join(g.root, rel)
+	g.recordDiff(rel, formatted, res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
@@ -814,6 +806,7 @@ func (g *Generator) writeGRPCShared(rel string, res *Result) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", rel, err)
 	}
+	g.recordDiff(rel, formatted, res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
@@ -847,6 +840,7 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 		Plural:       model.Plural(),
 		Fields:       fields,
 		NeedsStrconv: needsStrconv,
+		Ops:          model.Ops,
 	}
 	src, err := renderTemplate(ssrHandlerTmpl, ctx)
 	if err != nil {
@@ -857,6 +851,7 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 		return fmt.Errorf("%s: %w", rel, err)
 	}
 	abs := filepath.Join(g.root, rel)
+	g.recordDiff(rel, formatted, res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
@@ -874,6 +869,16 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 }
 
 func (g *Generator) writeSSRTemplates(model *parser.Model, res *Result) error {
+	rel := filepath.Join("web", "views", model.Snake()+".templ")
+	abs := filepath.Join(g.root, rel)
+
+	// Views are write-once: once created they belong to the user and are never
+	// clobbered on re-gen. --regen-views (g.RegenViews) forces a fresh scaffold.
+	if fileExists(abs) && !g.RegenViews {
+		res.Unchanged = append(res.Unchanged, rel)
+		return nil
+	}
+
 	fields := buildTemplateFields(model.Fields, g.manifest.DB)
 	ctx := ssrHandlerCtx{
 		ModulePath: g.modulePath,
@@ -881,15 +886,15 @@ func (g *Generator) writeSSRTemplates(model *parser.Model, res *Result) error {
 		Lower:      model.Lower(),
 		Plural:     model.Plural(),
 		Fields:     fields,
+		Ops:        model.Ops,
 	}
 
-	rel := filepath.Join("web", "views", model.Snake()+".templ")
 	content, err := renderTemplateHTML(ssrViewTmpl, ctx)
 	if err != nil {
 		return fmt.Errorf("%s: %w", rel, err)
 	}
-	abs := filepath.Join(g.root, rel)
 	existed := fileExists(abs)
+	g.recordDiff(rel, []byte(content), res)
 	if !g.dryRun {
 		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
@@ -931,7 +936,11 @@ func renderTemplateHTML(tmplStr string, data any) (string, error) {
 func (g *Generator) writeRegistry(res *Result) error {
 	models := make([]registryModel, 0, len(g.manifest.Models))
 	for name, entry := range g.manifest.Models {
-		models = append(models, registryModel{Name: name, NoHandler: entry.NoHandler})
+		models = append(models, registryModel{
+			Name:      name,
+			NoHandler: entry.NoHandler,
+			Ops:       parser.OpsFromSkipped(entry.SkippedOps),
+		})
 	}
 
 	rel := filepath.Join("internal", "app", "registry.go")
@@ -956,76 +965,23 @@ func (g *Generator) writeRegistry(res *Result) error {
 
 // ---- Routes ----
 
-// writeRoutes patches the // scaffold:routes:start/end block in internal/app/app.go
-// with route mounting statements for all models in the manifest.
+// writeRoutes regenerates internal/app/routes_gen.go with the model HTTP (and
+// gRPC) registrations. app.go is hand-written and simply calls the generated
+// a.registerGeneratedRoutes(r) — no markers.
 func (g *Generator) writeRoutes(res *Result) error {
-	appPath := filepath.Join(g.root, "internal", "app", "app.go")
-	data, err := os.ReadFile(appPath)
-	if err != nil {
-		// app.go doesn't exist yet (e.g. bare project without boilerplate) — skip
-		return nil
+	models := make([]registryModel, 0, len(g.manifest.Models))
+	for name, entry := range g.manifest.Models {
+		models = append(models, registryModel{Name: name, NoHandler: entry.NoHandler})
 	}
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 
-	// Sort model names for deterministic output
-	names := make([]string, 0, len(g.manifest.Models))
-	for name := range g.manifest.Models {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	// Build the route block content
-	var lines strings.Builder
-	for _, name := range names {
-		if entry, ok := g.manifest.Models[name]; ok && entry.NoHandler {
-			continue
-		}
-		if g.isSSR() {
-			fmt.Fprintf(&lines, "\t\tr.Mount(a.registry.Handlers.%s.Prefix(), a.registry.Handlers.%s.Router())\n", name, name)
-		} else {
-			fmt.Fprintf(&lines, "\t\tr.Route(a.registry.Handlers.%s.Prefix(), a.registry.Handlers.%s.RegisterRoutes)\n", name, name)
-		}
-	}
-
-	const startMark = "// scaffold:routes:start"
-	const endMark = "// scaffold:routes:end"
-	newBlock := startMark + "\n" + lines.String() + "\t\t" + endMark
-
-	updated, err := replaceMarkerBlock(string(data), startMark, endMark, newBlock)
-	if err != nil {
-		// Marker not found — app.go has the old single-line comment; skip silently
-		return nil
-	}
-
-	// In gRPC mode, also patch the // scaffold:grpc:start/end block with the
-	// per-model service registrations so the handlers are actually reachable.
-	if g.isGRPC() {
-		var grpcLines strings.Builder
-		for _, name := range names {
-			if entry, ok := g.manifest.Models[name]; ok && entry.NoHandler {
-				continue
-			}
-			fmt.Fprintf(&grpcLines, "\ta.registry.GRPCHandlers.%s.Register(a.grpcServer)\n", name)
-		}
-		const grpcStart = "// scaffold:grpc:start"
-		const grpcEnd = "// scaffold:grpc:end"
-		grpcBlock := grpcStart + "\n" + grpcLines.String() + "\t" + grpcEnd
-		if patched, perr := replaceMarkerBlock(updated, grpcStart, grpcEnd, grpcBlock); perr == nil {
-			updated = patched
-		}
-	}
-
-	formatted, err := formatter.GoSource(updated)
-	if err != nil {
-		return fmt.Errorf("app.go routes format: %w", err)
-	}
-
-	if !g.dryRun {
-		if err := os.WriteFile(appPath, formatted, 0644); err != nil {
-			return fmt.Errorf("write app.go: %w", err)
-		}
-	}
-	res.Overwritten = append(res.Overwritten, "internal/app/app.go (routes updated)")
-	return nil
+	rel := filepath.Join("internal", "app", "routes_gen.go")
+	return g.writeGoFile(rel, routesGenTmpl, registryCtx{
+		ModulePath: g.modulePath,
+		Models:     models,
+		GRPC:       g.isGRPC(),
+		IsSSR:      g.isSSR(),
+	}, true, res)
 }
 
 // ---- Utilities ----

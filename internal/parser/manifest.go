@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
 const manifestPath = ".scaffold/models.json"
+
+// migrationsDir is where goose .sql files live in a scaffolded project.
+const migrationsDir = "internal/adapters/store/migrations"
 
 // Manifest is the source of truth for all scaffolded models.
 type Manifest struct {
@@ -17,6 +22,12 @@ type Manifest struct {
 	GRPC    bool                     `json:"grpc"`     // true if gRPC support is enabled (legacy flag)
 	APIMode string                   `json:"api_mode"` // "rest" | "ssr" | "grpc"
 	Models  map[string]ManifestModel `json:"models"`
+
+	// migrationFloor is the highest migration version found on disk at load time.
+	// Unexported → never serialized. It keeps newly numbered migrations ahead of
+	// files created outside the manifest counter (e.g. hand-written or from the
+	// initial boilerplate), preventing duplicate-version collisions in goose.
+	migrationFloor int
 }
 
 // IsPostgres reports whether the project uses Postgres. Empty DB defaults to sqlite.
@@ -39,6 +50,7 @@ type ManifestModel struct {
 	UpdatedAt        time.Time       `json:"updatedAt"`
 	MigrationVersion int             `json:"migrationVersion"`
 	NoHandler        bool            `json:"noHandler,omitempty"`
+	SkippedOps       []string        `json:"skippedOps,omitempty"`
 }
 
 // ManifestField is a serializable snapshot of a Field.
@@ -55,7 +67,7 @@ func LoadManifest(root string) (*Manifest, error) {
 	path := filepath.Join(root, manifestPath)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &Manifest{Models: map[string]ManifestModel{}}, nil
+		return &Manifest{Models: map[string]ManifestModel{}, migrationFloor: highestMigrationOnDisk(root)}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("manifest: read: %w", err)
@@ -68,7 +80,37 @@ func LoadManifest(root string) (*Manifest, error) {
 	if m.Models == nil {
 		m.Models = map[string]ManifestModel{}
 	}
+	m.migrationFloor = highestMigrationOnDisk(root)
 	return &m, nil
+}
+
+// highestMigrationOnDisk returns the largest leading version number among the
+// .sql files in the migrations directory, or 0 if it is absent/empty. It makes
+// version numbering robust to migrations that exist outside the manifest counter.
+func highestMigrationOnDisk(root string) int {
+	entries, err := os.ReadDir(filepath.Join(root, migrationsDir))
+	if err != nil {
+		return 0
+	}
+	maxVer := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		i := strings.IndexByte(name, '_')
+		if i <= 0 {
+			continue
+		}
+		n, err := strconv.Atoi(name[:i])
+		if err != nil {
+			continue
+		}
+		if n > maxVer {
+			maxVer = n
+		}
+	}
+	return maxVer
 }
 
 // SaveManifest writes the manifest to .scaffold/models.json.

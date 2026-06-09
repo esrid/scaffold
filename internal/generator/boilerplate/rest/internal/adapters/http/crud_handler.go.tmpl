@@ -13,14 +13,25 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// CRUDOps selects which REST routes a handler registers. The zero value
+// registers nothing; the registry passes the model's configured ops.
+type CRUDOps struct {
+	List   bool
+	Read   bool
+	Create bool
+	Update bool
+	Delete bool
+}
+
 type CRUDHandler[T domain.Identifiable[T]] struct {
 	service ports.CRUDService[T]
 	logger  *slog.Logger
 	entity  string
 	prefix  string
+	ops     CRUDOps
 }
 
-func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], entity string, prefix string, logger *slog.Logger) *CRUDHandler[T] {
+func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], entity string, prefix string, ops CRUDOps, logger *slog.Logger) *CRUDHandler[T] {
 	if prefix == "" {
 		lower := strings.ToLower(entity)
 		if strings.HasSuffix(lower, "y") {
@@ -33,6 +44,7 @@ func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], enti
 		service: service,
 		entity:  entity,
 		prefix:  prefix,
+		ops:     ops,
 		logger:  logger,
 	}
 }
@@ -40,11 +52,21 @@ func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], enti
 func (h *CRUDHandler[T]) Prefix() string { return h.prefix }
 
 func (h *CRUDHandler[T]) RegisterRoutes(r chi.Router) {
-	r.Get("/{id}", h.Get)
-	r.Get("/", h.List)
-	r.Post("/", h.Create)
-	r.Put("/{id}", h.Update)
-	r.Delete("/{id}", h.Delete)
+	if h.ops.Read {
+		r.Get("/{id}", h.Get)
+	}
+	if h.ops.List {
+		r.Get("/", h.List)
+	}
+	if h.ops.Create {
+		r.Post("/", h.Create)
+	}
+	if h.ops.Update {
+		r.Put("/{id}", h.Update)
+	}
+	if h.ops.Delete {
+		r.Delete("/{id}", h.Delete)
+	}
 }
 
 func (h *CRUDHandler[T]) Get(w http.ResponseWriter, r *http.Request) {

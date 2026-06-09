@@ -162,7 +162,7 @@ func TestScaffold_REST_Domain_ContainsFields(t *testing.T) {
 	model := genModel(t, manifest, "Order", "status:string!", "total:float!", "notes:string")
 	runScaffold(t, root, manifest, model)
 
-	domain := assertExists(t, root, "internal/core/domain/order.go")
+	domain := assertExists(t, root, "internal/core/domain/order_gen.go")
 	// Use json tags as stable markers — gofmt aligns field types with spaces but never touches tags.
 	assertContains(t, domain, `json:"status"`, "domain struct has status field")
 	assertContains(t, domain, `json:"total"`, "domain struct has total field")
@@ -172,7 +172,9 @@ func TestScaffold_REST_Domain_ContainsFields(t *testing.T) {
 	assertContains(t, domain, "float64", "float field type")
 	assertContains(t, domain, `json:"id"`, "auto field ID")
 	assertContains(t, domain, `json:"created_at"`, "auto field CreatedAt")
-	assertGoSyntax(t, domain, "order.go")
+	assertGoSyntax(t, domain, "order_gen.go")
+	// Validate() lives in the user-owned file, never the generated one.
+	assertNotContains(t, domain, "Validate", "Validate not in _gen.go")
 }
 
 func TestScaffold_REST_Store_SQLite_UsesPlaceholders(t *testing.T) {
@@ -324,23 +326,33 @@ func TestScaffold_SSR_ShowView_ContainsFields(t *testing.T) {
 	assertContains(t, view, "hx-delete", "HTMX delete in show page")
 }
 
-func TestScaffold_SSR_Update_RegeneratesViews(t *testing.T) {
+func TestScaffold_SSR_Views_WriteOnce(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 
-	// First gen
+	// First gen creates the view.
 	model := genModel(t, manifest, "Task", "title:string!")
 	runScaffold(t, root, manifest, model)
-
 	list1 := readFile(t, root, "web/views/task.templ")
 	assertContains(t, list1, "Title", "first gen has title")
 	assertNotContains(t, list1, "Priority", "first gen has no priority")
 
-	// Second gen (add field)
+	// Second gen adds a field — but views are WRITE-ONCE, so the existing view
+	// is left untouched (the user owns it now).
 	model2 := genModel(t, manifest, "Task", "title:string!", "priority:int!")
 	runScaffold(t, root, manifest, model2)
-
 	list2 := readFile(t, root, "web/views/task.templ")
-	assertContains(t, list2, "Priority", "second gen adds priority")
+	assertNotContains(t, list2, "Priority", "write-once: view not clobbered on re-gen")
+
+	// --regen-views forces a fresh scaffold that includes the new field.
+	model3 := genModel(t, manifest, "Task", "title:string!", "priority:int!")
+	manifest.Models["Task"] = model3.ManifestEntry()
+	g := generator.New(root, testModule, manifest, false)
+	g.RegenViews = true
+	if _, err := g.Scaffold(model3); err != nil {
+		t.Fatalf("Scaffold (regen): %v", err)
+	}
+	list3 := readFile(t, root, "web/views/task.templ")
+	assertContains(t, list3, "Priority", "--regen-views refreshes the view")
 }
 
 func TestScaffold_NoFields_KeepsExistingFields(t *testing.T) {
@@ -565,14 +577,18 @@ func TestScaffold_StructPacking(t *testing.T) {
 	model := genModel(t, manifest, "Product", "active:bool!", "qty:int!", "name:string!")
 	runScaffold(t, root, manifest, model)
 
-	domain := assertExists(t, root, "internal/core/domain/product.go")
+	domain := assertExists(t, root, "internal/core/domain/product_gen.go")
 
-	startIdx := strings.Index(domain, "// scaffold:fields:start")
-	endIdx := strings.Index(domain, "// scaffold:fields:end")
-	if startIdx == -1 || endIdx == -1 {
-		t.Fatalf("could not find scaffold:fields markers")
+	// Isolate the struct body (no markers anymore) to check field packing order.
+	startIdx := strings.Index(domain, "type Product struct {")
+	if startIdx == -1 {
+		t.Fatalf("could not find Product struct in product_gen.go")
 	}
-	fieldsBlock := domain[startIdx:endIdx]
+	endIdx := strings.Index(domain[startIdx:], "}")
+	if endIdx == -1 {
+		t.Fatalf("could not find struct closing brace")
+	}
+	fieldsBlock := domain[startIdx : startIdx+endIdx]
 
 	// Verify that the fields in the struct are sorted by size descending (Struct Packing)
 	// with alphabetical tie-breakers.
@@ -601,6 +617,59 @@ func TestScaffold_StructPacking(t *testing.T) {
 	}
 }
 
+func TestScaffold_DomainSplit(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+	model := genModel(t, manifest, "Widget", "name:string!")
+	runScaffold(t, root, manifest, model)
+
+	gen := assertExists(t, root, "internal/core/domain/widget_gen.go")
+	assertContains(t, gen, "DO NOT EDIT", "gen file is marked generated")
+	assertContains(t, gen, "type Widget struct", "struct lives in gen file")
+	assertContains(t, gen, "GetID() string", "GetID in gen file")
+	assertContains(t, gen, "WithID(id string)", "WithID in gen file")
+	assertNotContains(t, gen, "scaffold:fields", "no markers in gen file")
+
+	user := assertExists(t, root, "internal/core/domain/widget.go")
+	assertContains(t, user, "Validate() error", "Validate in user file")
+	assertNotContains(t, user, "type Widget struct", "struct not duplicated in user file")
+
+	// Re-gen with a new field refreshes the generated struct; the user file is
+	// never touched (it is in Unchanged).
+	model2 := genModel(t, manifest, "Widget", "name:string!", "size:int!")
+	runScaffold(t, root, manifest, model2)
+	gen2 := readFile(t, root, "internal/core/domain/widget_gen.go")
+	assertContains(t, gen2, `json:"size"`, "re-gen adds the new field to the struct")
+}
+
+func TestScaffold_Diff(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+	model := genModel(t, manifest, "Gadget", "name:string!")
+	runScaffold(t, root, manifest, model)
+
+	// Re-gen adding a field, in --diff mode: diffs are produced, nothing written.
+	model2 := genModel(t, manifest, "Gadget", "name:string!", "weight:int!")
+	manifest.Models["Gadget"] = model2.ManifestEntry()
+	g := generator.New(root, testModule, manifest, true)
+	g.Diff = true
+	res, err := g.Scaffold(model2)
+	if err != nil {
+		t.Fatalf("Scaffold: %v", err)
+	}
+
+	if len(res.Diffs) == 0 {
+		t.Fatal("expected diffs in --diff mode")
+	}
+	joined := strings.Join(res.Diffs, "\n")
+	if !strings.Contains(joined, "weight") {
+		t.Errorf("diff should mention the new field:\n%s", joined)
+	}
+	// --diff must not touch disk: the struct still lacks the new field.
+	gen := readFile(t, root, "internal/core/domain/gadget_gen.go")
+	if strings.Contains(gen, "weight") {
+		t.Error("--diff mode must not write files")
+	}
+}
+
 func TestScaffold_NoHandler_SkipsHTTP(t *testing.T) {
 	root, manifest := projectSetup(t, "sqlite", "ssr")
 	fs, err := parser.ParseFields([]string{"name:string!"})
@@ -611,20 +680,6 @@ func TestScaffold_NoHandler_SkipsHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildModel: %v", err)
 	}
-	// Write mock app.go with route markers
-	appDir := filepath.Join(root, "internal", "app")
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		t.Fatalf("mkdir app: %v", err)
-	}
-	appMock := `package app
-func mountRoutes() {
-	// scaffold:routes:start
-	// scaffold:routes:end
-}`
-	if err := os.WriteFile(filepath.Join(appDir, "app.go"), []byte(appMock), 0644); err != nil {
-		t.Fatalf("write mock app.go: %v", err)
-	}
-
 	runScaffold(t, root, manifest, model)
 
 	// Verify store & service are created
@@ -644,10 +699,10 @@ func mountRoutes() {
 		t.Error("expected registry.go to not reference Product Handler")
 	}
 
-	// Verify app.go does not mount routes for Product
-	appFile := assertExists(t, root, "internal/app/app.go")
-	if strings.Contains(appFile, "registry.Handlers.Product") {
-		t.Error("expected app.go to not mount Product routes")
+	// Verify routes_gen.go does not mount routes for Product
+	routes := assertExists(t, root, "internal/app/routes_gen.go")
+	if strings.Contains(routes, "registry.Handlers.Product") {
+		t.Error("expected routes_gen.go to not mount Product routes")
 	}
 }
 

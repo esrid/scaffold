@@ -31,6 +31,7 @@ type App struct {
 	db         *sql.DB
 	logger     *slog.Logger
 	registry   *Registry
+	custom     *Custom
 	fileSystem http.FileSystem
 	{{- if .GRPC}}
 	grpcServer *grpc.Server
@@ -50,11 +51,14 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 		return nil, err
 	}
 
+	registry := NewRegistry(db, logger)
+
 	return &App{
 		cfg:        cfg,
 		db:         db,
 		logger:     logger,
-		registry:   NewRegistry(db, logger),
+		registry:   registry,
+		custom:     newCustom(cfg, registry, logger),
 		fileSystem: fileSystem,
 	}, nil
 }
@@ -71,8 +75,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.grpcServer = grpc.NewServer()
 	healthSrv := health.NewServer()
 	healthpb.RegisterHealthServer(a.grpcServer, healthSrv)
-	// scaffold:grpc:start
-	// scaffold:grpc:end
+	a.registerGeneratedGRPC()
 	if a.cfg.Env != "production" {
 		reflection.Register(a.grpcServer)
 	}
@@ -141,8 +144,7 @@ func (a *App) mountRoutes(r *chi.Mux) {
 	r.Get("/robots.txt", a.serveFile("robots.txt", "text/plain; charset=utf-8", web.RobotsTXT))
 	r.Get("/sitemap.xml", a.serveFile("sitemap.xml", "application/xml", web.SitemapXML))
 	serveStatic(r, "/static", a.fileSystem)
-	// scaffold:routes:start
-	// scaffold:routes:end
+	a.registerGeneratedRoutes(r)
 }
 
 func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,7 @@ type Model struct {
 	TableName string // "products"
 	IsNew     bool   // false if already in manifest (UPDATE mode)
 	NoHandler bool
+	Ops       Ops // which CRUD operations to generate (default: all)
 
 	// Previous fields from manifest — used to diff for migrations.
 	PrevFields []Field
@@ -46,12 +47,14 @@ func BuildModel(name string, fields []Field, removeFields []string, manifest *Ma
 		Name:      name,
 		TableName: tableName,
 		NoHandler: noHandler,
+		Ops:       AllOps(),
 	}
 
 	existing, exists := manifest.Models[name]
 	if exists {
 		m.IsNew = false
 		m.PrevFields = manifestFieldsToFields(existing.Fields)
+		m.Ops = OpsFromSkipped(existing.SkippedOps) // preserve prior op selection
 		m.NoHandler = noHandler || existing.NoHandler
 		merged, err := mergeFields(m.PrevFields, fields, removeFields)
 		if err != nil {
@@ -163,6 +166,7 @@ func (m *Model) ManifestEntry() ManifestModel {
 		UpdatedAt:        now,
 		MigrationVersion: m.MigrationVersion,
 		NoHandler:        m.NoHandler,
+		SkippedOps:       m.Ops.Skipped(),
 	}
 }
 
@@ -254,6 +258,11 @@ func nextMigrationVersion(manifest *Manifest) int {
 		if m.MigrationVersion > max {
 			max = m.MigrationVersion
 		}
+	}
+	// Never collide with a migration that already exists on disk but isn't
+	// tracked by the manifest counter (hand-written, boilerplate, etc.).
+	if manifest.migrationFloor > max {
+		max = manifest.migrationFloor
 	}
 	return max + 1
 }

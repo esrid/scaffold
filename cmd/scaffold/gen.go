@@ -14,6 +14,10 @@ var (
 	tableName    string
 	removeFields []string
 	noHandler    bool
+	skipOps      []string
+	onlyOps      []string
+	regenViews   bool
+	diffMode     bool
 )
 
 var genCmd = &cobra.Command{
@@ -79,8 +83,9 @@ GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
   SSR mode only:
     internal/adapters/http/product_handler_gen.go SSR handler + typed bindForm — always regenerated
     internal/adapters/http/product_handler.go     your extensions — never overwritten
-    web/views/product.templ                       templ List/Form/Show components — regenerated on field changes
-                                                  (run "templ generate" — scaffold does this for you)
+    web/views/product.templ                       templ List/Form/Show components — WRITE-ONCE
+                                                  (created once, then yours; use --regen-views to refresh.
+                                                  "templ generate" is run for you)
 
   gRPC mode only:
     api/proto/v1/product.proto                    protobuf definition — always regenerated
@@ -131,6 +136,12 @@ EXAMPLES
   # Drop a field from an existing model (generates DROP COLUMN migration)
   scaffold gen Product --remove stock
 
+  # Skip CRUD operations — routes & view affordances are not generated
+  # (ops: list, read, create, update, delete). Useful when records are created
+  # elsewhere (e.g. by a background job) or for read-only resources.
+  scaffold gen Step title:string! --skip create,delete   # no create/delete
+  scaffold gen Report title:string! --only list,read      # read-only resource
+
   # Preview changes without writing any files
   scaffold gen Product name:string! price:float! --dry-run
 
@@ -145,6 +156,10 @@ func init() {
 	genCmd.Flags().StringVar(&tableName, "table-name", "", "Override auto-pluralized table name")
 	genCmd.Flags().StringSliceVar(&removeFields, "remove", nil, "Field name(s) to drop from an existing model (comma-separated or repeated)")
 	genCmd.Flags().BoolVar(&noHandler, "no-handler", false, "Skip generating HTTP/gRPC handlers and routes")
+	genCmd.Flags().StringSliceVar(&skipOps, "skip", nil, "CRUD ops to NOT generate (list,read,create,update,delete)")
+	genCmd.Flags().StringSliceVar(&onlyOps, "only", nil, "Generate ONLY these CRUD ops (mutually exclusive with --skip)")
+	genCmd.Flags().BoolVar(&regenViews, "regen-views", false, "Overwrite SSR views (default: write-once — views are never clobbered once created)")
+	genCmd.Flags().BoolVar(&diffMode, "diff", false, "Show a unified diff of what would change, without writing any files")
 	rootCmd.AddCommand(genCmd)
 }
 
@@ -177,10 +192,26 @@ func runGen(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// --only / --skip override the model's CRUD ops for this run (authoritative).
+	if len(onlyOps) > 0 || len(skipOps) > 0 {
+		ops, err := parser.ResolveOps(onlyOps, skipOps)
+		if err != nil {
+			return err
+		}
+		model.Ops = ops
+	}
+
 	// Add the model to the manifest before scaffolding so writeRegistry sees it.
 	manifest.Models[modelName] = model.ManifestEntry()
 
+	// --diff implies a dry run: nothing is written, no manifest save, no templ gen.
+	if diffMode {
+		dryRun = true
+	}
+
 	g := generator.New(root, modulePath, manifest, dryRun)
+	g.RegenViews = regenViews
+	g.Diff = diffMode
 	result, err := g.Scaffold(model)
 	if err != nil {
 		return err
