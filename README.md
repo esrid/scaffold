@@ -125,6 +125,9 @@ Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool
 (not `time` or `json`). Stored as a native array on Postgres and a JSON-encoded
 `TEXT` column on SQLite.
 
+> [!NOTE]
+> **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}.go`.
+
 #### Modifiers
 
 | Modifier | SQL emitted |
@@ -179,34 +182,34 @@ myapp/
 ├── Makefile                           # make run / make build
 ├── .env.example
 ├── .scaffold/models.json              # manifest
-└── internal/
-    ├── app/
-    │   ├── app.go                     # loads templates, mounts routes
-    │   ├── config.go
-    │   └── registry.go                # auto-regenerated
-    ├── core/
-    │   ├── domain/{model}.go          # struct + Validate()
-    │   ├── ports/{model}.go           # interfaces
-    │   └── services/
-    │       ├── {model}_service_gen.go # CRUD delegation (regenerated)
-    │       └── {model}_service.go     # your logic (never touched)
-    └── adapters/
-        ├── http/
-        │   ├── {model}_handler_gen.go # SSR handler + bindForm (regenerated)
-        │   ├── {model}_handler.go     # your extensions (never touched)
-        │   └── middleware.go
-        └── store/
-            ├── {model}_store_gen.go
-            └── {model}_store.go
-web/
-├── static/
-│   └── app.css                        # plain CSS stylesheet (served at /static/)
-├── static.go                          # //go:embed for static assets
-└── views/
-    ├── layout.templ                   # shared page layout component
-    ├── home.templ
-    ├── helpers.go                     # display/truthy template helpers
-    └── {model}.templ                  # List/Form/Show components (regenerated)
+├── internal/
+│   ├── app/
+│   │   ├── app.go                     # loads templates, mounts routes
+│   │   ├── config.go
+│   │   └── registry.go                # auto-regenerated
+│   ├── core/
+│   │   ├── domain/{model}.go          # struct + Validate()
+│   │   ├── ports/{model}.go           # interfaces
+│   │   └── services/
+│   │       ├── {model}_service_gen.go # CRUD delegation (regenerated)
+│   │       └── {model}_service.go     # your logic (never touched)
+│   └── adapters/
+│       ├── http/
+│       │   ├── {model}_handler_gen.go # SSR handler + bindForm (regenerated)
+│       │   ├── {model}_handler.go     # your extensions (never touched)
+│       │   └── middleware.go
+│       └── store/
+│           ├── {model}_store_gen.go
+│           └── {model}_store.go
+└── web/
+    ├── static/
+    │   └── app.css                        # plain CSS stylesheet (served at /static/)
+    ├── static.go                          # //go:embed for static assets
+    └── views/
+        ├── layout.templ                   # shared page layout component
+        ├── home.templ
+        ├── helpers.go                     # display/truthy template helpers
+        └── {model}.templ                  # List/Form/Show components (regenerated)
 ```
 
 > templ compiles `.templ` files to Go. Run `make generate` (or `templ generate`)
@@ -235,7 +238,7 @@ Run `make proto` after `scaffold gen` to compile `.proto` → Go pb package.
 
 | File | Behaviour |
 |------|-----------|
-| `domain/{model}.go` | Struct fields patched via markers; `Validate()` is yours |
+| `domain/{model}.go` | Struct fields patched via markers (sorted descending by byte size for memory alignment / struct packing); `Validate()` is yours |
 | `ports/{model}.go` | Written once, never touched |
 | `services/{model}_service_gen.go` | Always regenerated |
 | `services/{model}_service.go` | Yours — never overwritten |

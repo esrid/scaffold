@@ -9,7 +9,7 @@ import (
 // pointers render as the empty string) and formatting everything else with %v.
 func display(v any) string {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return ""
 		}
@@ -25,7 +25,7 @@ func display(v any) string {
 // decide whether a checkbox should be rendered as checked.
 func truthy(v any) bool {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return false
 		}

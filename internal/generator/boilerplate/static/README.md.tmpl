@@ -99,6 +99,9 @@ scaffold gen Article title:string! --dry-run
 
 Useful modifiers: `{unique}`, `{index}`, `{default=value}`, `{fk=table,cascade}`, `{check=expr}`.
 
+> [!NOTE]
+> **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}.go`.
+
 ## What scaffold manages vs. what's yours
 
 | File | Ownership |
@@ -137,9 +140,21 @@ func (p Product) Validate() error {
 
 **Custom queries** — in `internal/adapters/store/{model}_store.go`:
 
+For both Postgres (`pgx`) and SQLite (`database/sql` via adapted helpers), you can use struct-mapping helpers like `CollectRows` and `RowToStructByName` to map query results without writing manual scanner code:
+
 ```go
 func (s *ProductStore) FindBySlug(ctx context.Context, slug string) (*domain.Product, error) {
-    // your SQL here
+	[[if eq .DB "sqlite"]]// Example using SQLite adapted helpers:
+	rows, err := s.db.QueryContext(ctx, "SELECT id, name, price, active, created_at, updated_at FROM products WHERE slug = ?", slug)
+	if err != nil {
+		return nil, err
+	}
+	return store.CollectOneRow(rows, store.RowToAddrOfStructByName[domain.Product])[[else]]// Example using pgx:
+	rows, err := s.db.Query(ctx, "SELECT id, name, price, active, created_at, updated_at FROM products WHERE slug = $1", slug)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[domain.Product])[[end]]
 }
 ```
 
@@ -194,6 +209,7 @@ The core never imports SDK packages. Adapters are the only place that knows abou
 | `GRPC_ADDR` | `:50051` | gRPC listen address |[[end]]
 | `APP_ENV` | `development` | `production` enables JSON logs + embedded assets |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `ALLOWED_ORIGINS` | `*` | Allowed CORS origins (comma-separated list, or `*` for all) |
 
 ## Production checklist
 
