@@ -92,17 +92,24 @@ Running `gen` again on an existing model **merges** the fields you pass into the
 ```
 name:type              nullable field (Go pointer, e.g. *string)
 name:type!             NOT NULL field
-name:type{mod}         field with modifier
-name:type{mod,mod}!    multiple modifiers, NOT NULL
-name:[]type            array field (Go slice, e.g. []string)
+
+# Modifiers (comma form is shell-safe in zsh/bash):
+name:type,mod          field with modifier (e.g. email:string,unique)
+name:type,mod,mod!     multiple modifiers, NOT NULL
+
+# Array fields (array/arr modifier is shell-safe):
+name:type,array        array field (e.g. tags:string,array)
+name:type,array!       NOT NULL array field
+
+# Legacy brace & bracket syntax (requires quotes in zsh/bash):
+name:type{mod,mod}!    brace-wrapped modifiers
+name:[]type!           prefix-bracket arrays
 ```
 
 `!` and `nn` are equivalent.
 
-> **Quote fields in bash/zsh.** A modifier list with a comma (`{255,unique}`) triggers
-> shell brace expansion, and `check=price>0` is read as a redirection. Wrap any field
-> that contains `{…}` or `>` in single quotes: `'email:string{255,unique}!'`,
-> `'price:float{check=price>0}!'`.
+> **Shell-safe vs Legacy Syntax:** A modifier list with a comma inside braces (`{255,unique}`) triggers shell brace expansion in `zsh`, and brackets (`[]`) or operators like `>` can be intercepted by the shell. 
+> To avoid quoting, use the comma modifier syntax (`email:string,255,unique!`) and the `,array` suffix (`tags:string,array!`). If you use the legacy `{...}` or `[]` syntax, wrap the entire argument in single quotes: `'email:string{255,unique}!'`, `'tags:[]string!'`.
 
 #### Types
 
@@ -116,14 +123,12 @@ name:[]type            array field (Go slice, e.g. []string)
 | `bool` | `bool` | `INTEGER` | `BOOLEAN` |
 | `time`, `datetime` | `time.Time` | `DATETIME` | `TIMESTAMPTZ` |
 | `json` | `json.RawMessage` | `TEXT` | `JSONB` |
-| `[]<type>` | Go slice (e.g. `[]string`) | JSON-encoded `TEXT` | native array (e.g. `TEXT[]`) |
+| `[]<type>` (or `<type>,array`) | Go slice (e.g. `[]string`) | JSON-encoded `TEXT` | native array (e.g. `TEXT[]`) |
 
 `id`, `created_at`, `updated_at` are auto-managed — do not declare them.
 
-**Array fields** use the `[]<type>` prefix (e.g. `tags:[]string!`, `scores:[]int`).
-Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool`
-(not `time` or `json`). Stored as a native array on Postgres and a JSON-encoded
-`TEXT` column on SQLite.
+**Array fields** can be declared using either the shell-safe `<type>,array` suffix (e.g. `tags:string,array!`, `scores:int,array`) or the legacy `[]<type>` prefix (e.g. `tags:[]string!`, `scores:[]int`).
+Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool` (not `time` or `json`). Stored as a native array on Postgres and a JSON-encoded `TEXT` column on SQLite.
 
 > [!NOTE]
 > **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}.go`.
@@ -138,22 +143,22 @@ Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool
 | `<n>` | `VARCHAR(n)` (string/text only) |
 | `default=val` | `DEFAULT 'val'` |
 | `fk=table` | `REFERENCES table(id)` |
-| `fk=table,cascade` | `… ON DELETE CASCADE` |
-| `fk=table,setnull` | `… ON DELETE SET NULL` |
+| `cascade` | `ON DELETE CASCADE` (used with `fk=`) |
+| `setnull` | `ON DELETE SET NULL` (used with `fk=`) |
 | `check=expr` | `CHECK (expr)` |
 
 #### Examples
 
 ```bash
-scaffold gen Product name:string! price:float! sku:string{unique}
+scaffold gen Product name:string! price:float! sku:string,unique
 scaffold gen Article title:string! body:string views:int
-scaffold gen Order status:string{default=pending,nn}
-scaffold gen User username:string{92}! email:string{255,unique}!
-scaffold gen Post user_id:string{fk=users,cascade,index}! title:string!
+scaffold gen Order status:string,default=pending,nn
+scaffold gen User username:string,92! email:string,255,unique!
+scaffold gen Post user_id:string,fk=users,cascade,index! title:string!
 scaffold gen Event payload:json! metadata:json
-scaffold gen Post title:string! tags:[]string! scores:[]int  # array fields (TEXT[] on postgres, JSON TEXT on sqlite)
-scaffold gen Product stock:int                             # add stock to an existing model (name, price kept)
-scaffold gen Product --remove stock                        # drop the stock column
+scaffold gen Post title:string! tags:string,array! scores:int,array  # shell-safe array fields (TEXT[] on postgres, JSON TEXT on sqlite)
+scaffold gen Product stock:int                                      # add stock to an existing model (name, price kept)
+scaffold gen Product --remove stock                                 # drop the stock column
 scaffold gen Product name:string! price:float! --dry-run
 scaffold gen Person name:string! --table-name people
 ```
