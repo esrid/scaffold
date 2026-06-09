@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+
+# ---------- builder ----------
+FROM golang:1.26-bookworm AS builder
+WORKDIR /src
+
+# sqlean SQLite extension (sqlean.so) for Linux. Uses the latest release; pin for
+# reproducible builds by replacing "latest/download" with "download/<version>".
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+ && curl -fsSL -o /tmp/sqlean.zip \
+      "https://github.com/nalgeon/sqlean/releases/latest/download/sqlean-linux-x86.zip" \
+ && unzip -o /tmp/sqlean.zip -d /tmp/sqlean \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+{{- if .IsSSR}}
+# Regenerate templ views in case the committed *_templ.go are stale.
+RUN go run github.com/a-h/templ/cmd/templ generate
+{{- end}}
+
+# go-sqlite3 requires CGO; sqlean is loaded at runtime via load_extension.
+RUN CGO_ENABLED=1 go build -trimpath -o /out/server .
+
+# ---------- runtime ----------
+FROM debian:bookworm-slim
+WORKDIR /app
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/server /app/server
+# sqlean.so must sit in sqlite_ext/ next to the binary (see store.sqleanPath()).
+COPY --from=builder /tmp/sqlean/sqlean.so /app/sqlite_ext/sqlean.so
+
+ENV ADDR=:8080
+EXPOSE 8080
+
+# Provide SECRET_KEY (required) and other env at runtime. Persist SQLite with a
+# volume at /app/data and DATABASE_URL=file:/app/data/app.db?_journal_mode=WAL&_foreign_keys=on
+CMD ["/app/server"]

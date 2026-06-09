@@ -1,0 +1,32 @@
+package app
+
+import "log/slog"
+
+// Custom holds services that are NOT managed by scaffold — i.e. anything that is
+// not a CRUD model (orchestrators, third-party clients, background workers, …).
+//
+// This file is written once by `scaffold init` and is NEVER regenerated, so it
+// is the safe place to wire your own services. They get everything they need:
+//   - cfg    — configuration & secrets (API keys, URLs)
+//   - reg    — the generated Registry (model stores & services via reg.Stores.*)
+//   - logger — the app logger
+//
+// Example:
+//
+//	type Custom struct {
+//	    Roadmap *services.RoadmapService
+//	}
+//
+//	func newCustom(cfg Config, reg *Registry, logger *slog.Logger) *Custom {
+//	    return &Custom{
+//	        Roadmap: services.NewRoadmapService(reg.Stores.Step, logger),
+//	    }
+//	}
+type Custom struct {
+	// add your services here
+}
+
+// newCustom wires custom services. It is called once from NewApp.
+func newCustom(cfg Config, reg *Registry, logger *slog.Logger) *Custom {
+	return &Custom{}
+}
