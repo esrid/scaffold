@@ -99,8 +99,12 @@ scaffold gen Article title:string! --dry-run
 | `bool!` | `bool` | `INTEGER NOT NULL` |
 | `time!` | `time.Time` | `DATETIME NOT NULL` |
 | `json!` | `json.RawMessage` | `TEXT NOT NULL` |
+| `[]<type>` (or `<type>,array`) | Go slice (e.g. `[]string`) | JSON-encoded `TEXT` / native array |
 
-Useful modifiers: `,unique`, `,index`, `,default=value`, `,fk=table,cascade`, `,check=expr` (comma syntax is shell-safe in zsh/bash).
+**Array fields** can be declared using either the shell-safe `<type>,array` suffix (e.g. `tags:string,array!`, `scores:int,array`) or the legacy `[]<type>` prefix (e.g. `tags:[]string!`, `scores:[]int`).
+Valid element types: `string`, `text`, `int`, `int64`, `float`, `float64`, `bool`.
+
+Useful modifiers: `,unique`, `,index`, `,default=value`, `,fk=table`, `,cascade` (requires `fk=`), `,setnull` (requires `fk=`), `,check=expr` (comma syntax is shell-safe in zsh/bash).
 
 > [!NOTE]
 > **Struct Field Packing:** To optimize memory alignment and minimize padding, `scaffold` automatically sorts all generated struct fields descending by their byte size in `domain/{model}.go`.
