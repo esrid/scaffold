@@ -56,8 +56,22 @@ func Open(dsn string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// Enable WAL mode, busy timeout, and foreign keys for safe concurrent usage.
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: enable WAL: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: set busy timeout: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys=ON;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: enable foreign keys: %w", err)
+	}
+
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(10)
 
 	if err := runMigrations(db); err != nil {
 		_ = db.Close()

@@ -35,8 +35,8 @@ func TestHighestMigrationOnDisk(t *testing.T) {
 func TestNextMigrationVersion_RespectsDiskFloor(t *testing.T) {
 	// Disk has migrations beyond the manifest counter → next must clear the floor.
 	m := &Manifest{DB: "sqlite", Models: map[string]ManifestModel{}, migrationFloor: 4}
-	if got := nextMigrationVersion(m); got != 5 {
-		t.Fatalf("nextMigrationVersion = %d, want 5 (floor+1)", got)
+	if got := NextMigrationVersion(m); got != 5 {
+		t.Fatalf("NextMigrationVersion = %d, want 5 (floor+1)", got)
 	}
 
 	// Manifest counter higher than the floor still wins.
@@ -45,7 +45,7 @@ func TestNextMigrationVersion_RespectsDiskFloor(t *testing.T) {
 		Models:         map[string]ManifestModel{"X": {MigrationVersion: 7}},
 		migrationFloor: 4,
 	}
-	if got := nextMigrationVersion(m2); got != 8 {
-		t.Fatalf("nextMigrationVersion = %d, want 8", got)
+	if got := NextMigrationVersion(m2); got != 8 {
+		t.Fatalf("NextMigrationVersion = %d, want 8", got)
 	}
 }

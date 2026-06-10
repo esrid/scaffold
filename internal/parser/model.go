@@ -17,6 +17,11 @@ type Model struct {
 	IsNew     bool   // false if already in manifest (UPDATE mode)
 	NoHandler bool
 	Ops       Ops // which CRUD operations to generate (default: all)
+	SoftDelete            bool // true if soft deletion is enabled
+	PrevSoftDelete        bool // previous soft deletion state from manifest
+	SoftDeleteJustEnabled bool // true if soft deletion was just enabled on re-gen
+	UniqueTogether        [][]string // compound unique constraints, e.g. [][]string{{"name", "category"}}
+	PrevUniqueTogether    [][]string // previous compound unique constraints from manifest
 
 	// Previous fields from manifest — used to diff for migrations.
 	PrevFields []Field
@@ -28,6 +33,8 @@ type Model struct {
 	// modifiers) changed in place on re-gen. No ALTER migration is generated
 	// for these — the CLI warns that a hand-written migration is needed.
 	ChangedFields []string
+	// Warnings lists non-blocking issues found during validation (e.g. FK referencing unknown tables).
+	Warnings []string
 }
 
 var pluralizeClient = pluralize.NewClient()
@@ -73,7 +80,7 @@ func BuildModel(name string, fields []Field, removeFields []string, manifest *Ma
 		m.ChangedFields = changedFieldNames(m.PrevFields, fields)
 		added, removed := m.DiffFields()
 		if len(added) > 0 || len(removed) > 0 {
-			m.MigrationVersion = nextMigrationVersion(manifest)
+			m.MigrationVersion = NextMigrationVersion(manifest)
 		} else {
 			m.MigrationVersion = existing.MigrationVersion
 		}
@@ -86,7 +93,26 @@ func BuildModel(name string, fields []Field, removeFields []string, manifest *Ma
 			return nil, fmt.Errorf("new model %q requires at least one field", name)
 		}
 		m.Fields = fields
-		m.MigrationVersion = nextMigrationVersion(manifest)
+		m.MigrationVersion = NextMigrationVersion(manifest)
+	}
+
+	// Validate foreign key target tables exist in the manifest
+	for _, f := range m.Fields {
+		for _, mod := range f.Modifiers {
+			if strings.HasPrefix(mod, "fk=") {
+				targetTable := strings.TrimPrefix(mod, "fk=")
+				found := false
+				for _, other := range manifest.Models {
+					if other.TableName == targetTable {
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.Warnings = append(m.Warnings, fmt.Sprintf("foreign key target table %q for field %q does not exist in manifest of scaffolded models", targetTable, f.Name))
+				}
+			}
+		}
 	}
 
 	return m, nil
@@ -190,9 +216,11 @@ func ModelFromEntry(name string, entry ManifestModel, manifest *Manifest) (*Mode
 		Fields:           manifestFieldsToFields(entry.Fields),
 		TableName:        entry.TableName,
 		IsNew:            false,
-		MigrationVersion: nextMigrationVersion(manifest),
+		MigrationVersion: NextMigrationVersion(manifest),
 		NoHandler:        entry.NoHandler,
 		ScaffoldedAt:     entry.ScaffoldedAt,
+		SoftDelete:       entry.SoftDelete,
+		UniqueTogether:   entry.UniqueTogether,
 	}, nil
 }
 
@@ -221,6 +249,8 @@ func (m *Model) ManifestEntry() ManifestModel {
 		MigrationVersion: m.MigrationVersion,
 		NoHandler:        m.NoHandler,
 		SkippedOps:       m.Ops.Skipped(),
+		SoftDelete:       m.SoftDelete,
+		UniqueTogether:   m.UniqueTogether,
 	}
 }
 
@@ -301,7 +331,7 @@ func manifestFieldsToFields(mf []ManifestField) []Field {
 	return fields
 }
 
-func nextMigrationVersion(manifest *Manifest) int {
+func NextMigrationVersion(manifest *Manifest) int {
 	// Version 1 is reserved for the boilerplate initial schema on projects created with `scaffold init`.
 	// Start model migrations at 2 for those projects (manifest.DB is set), at 1 otherwise (legacy projects).
 	max := 0

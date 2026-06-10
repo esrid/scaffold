@@ -147,13 +147,13 @@ type {{.Name}}Store struct{ *Store }
 var _ ports.CRUDStore[domain.{{.Name}}] = (*{{.Name}}Store)(nil)
 
 const (
-	sql{{.Name}}Get    = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} WHERE id = ?` + "`" + `
+	sql{{.Name}}Get    = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} WHERE id = ?{{if .SoftDelete}} AND deleted_at IS NULL{{end}}` + "`" + `
 	// id is a UUIDv7 (time-ordered), so ORDER BY id DESC returns newest first
 	// with a deterministic order — required for stable pagination.
-	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} ORDER BY id DESC LIMIT ? OFFSET ?` + "`" + `
+	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} {{if .SoftDelete}}WHERE deleted_at IS NULL {{end}}ORDER BY id DESC LIMIT ? OFFSET ?` + "`" + `
 	sql{{.Name}}Create = ` + "`" + `INSERT INTO {{.TableName}} ({{.InsertCols}}) VALUES ({{.InsertPlaceholders}}) RETURNING id, created_at, updated_at` + "`" + `
-	sql{{.Name}}Update = ` + "`" + `UPDATE {{.TableName}} SET {{.UpdateSet}}, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING created_at, updated_at` + "`" + `
-	sql{{.Name}}Delete = ` + "`" + `DELETE FROM {{.TableName}} WHERE id = ?` + "`" + `
+	sql{{.Name}}Update = ` + "`" + `UPDATE {{.TableName}} SET {{.UpdateSet}}, updated_at = CURRENT_TIMESTAMP WHERE id = ?{{if .SoftDelete}} AND deleted_at IS NULL{{end}} RETURNING created_at, updated_at` + "`" + `
+	sql{{.Name}}Delete = ` + "`" + `{{if .SoftDelete}}UPDATE {{.TableName}} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL{{else}}DELETE FROM {{.TableName}} WHERE id = ?{{end}}` + "`" + `
 )
 
 {{template "scanFunc" .}}
@@ -292,11 +292,15 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
     {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}},
 {{- end}}
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP{{if .SoftDelete}},
+    deleted_at DATETIME{{end}}
 );
 {{- range .Fields}}{{if .HasIndex}}
 CREATE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}({{.Name}});
 {{- end}}{{end}}
+{{- range .UniqueTogether}}
+CREATE UNIQUE INDEX IF NOT EXISTS {{.Name}} ON {{$.TableName}}({{.ColsCS}});
+{{- end}}
 
 CREATE TRIGGER IF NOT EXISTS trg_{{.TableName}}_updated_at
 AFTER UPDATE ON {{.TableName}}
@@ -315,11 +319,15 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
     {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}},
 {{- end}}
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP{{if .SoftDelete}},
+    deleted_at DATETIME{{end}}
 );
 {{- range .Fields}}{{if .HasIndex}}
 CREATE INDEX IF NOT EXISTS idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}({{.Name}});
 {{- end}}{{end}}
+{{- range .UniqueTogether}}
+CREATE UNIQUE INDEX IF NOT EXISTS {{.Name}} ON {{$.TableName}}({{.ColsCS}});
+{{- end}}
 
 -- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS trg_{{.TableName}}_updated_at
@@ -332,6 +340,9 @@ END;
 -- +goose StatementEnd
 
 -- +goose Down
+{{- range .UniqueTogether}}
+DROP INDEX IF EXISTS {{.Name}};
+{{- end}}
 DROP TRIGGER IF EXISTS trg_{{.TableName}}_updated_at;
 DROP TABLE IF EXISTS {{.TableName}};
 `
@@ -581,13 +592,13 @@ type {{.Name}}Store struct{ *Store }
 var _ ports.CRUDStore[domain.{{.Name}}] = (*{{.Name}}Store)(nil)
 
 const (
-	sql{{.Name}}Get    = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} WHERE id = $1` + "`" + `
+	sql{{.Name}}Get    = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} WHERE id = $1{{if .SoftDelete}} AND deleted_at IS NULL{{end}}` + "`" + `
 	// id is a UUIDv7 (time-ordered), so ORDER BY id DESC returns newest first
 	// with a deterministic order — required for stable pagination.
-	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} ORDER BY id DESC LIMIT $1 OFFSET $2` + "`" + `
+	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} {{if .SoftDelete}}WHERE deleted_at IS NULL {{end}}ORDER BY id DESC LIMIT $1 OFFSET $2` + "`" + `
 	sql{{.Name}}Create = ` + "`" + `INSERT INTO {{.TableName}} ({{.InsertCols}}) VALUES ({{.InsertPlaceholders}}) RETURNING {{.SelectCols}}` + "`" + `
-	sql{{.Name}}Update = ` + "`" + `UPDATE {{.TableName}} SET {{.UpdateSet}}, updated_at = NOW() WHERE id = ${{.UpdateIDIdx}} RETURNING {{.SelectCols}}` + "`" + `
-	sql{{.Name}}Delete = ` + "`" + `DELETE FROM {{.TableName}} WHERE id = $1` + "`" + `
+	sql{{.Name}}Update = ` + "`" + `UPDATE {{.TableName}} SET {{.UpdateSet}}, updated_at = NOW() WHERE id = ${{.UpdateIDIdx}}{{if .SoftDelete}} AND deleted_at IS NULL{{end}} RETURNING {{.SelectCols}}` + "`" + `
+	sql{{.Name}}Delete = ` + "`" + `{{if .SoftDelete}}UPDATE {{.TableName}} SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL{{else}}DELETE FROM {{.TableName}} WHERE id = $1{{end}}` + "`" + `
 )
 
 func (s *{{.Name}}Store) Get(ctx context.Context, id string) (domain.{{.Name}}, error) {
@@ -784,12 +795,16 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
     {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}},
 {{- end}}
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(){{if .SoftDelete}},
+    deleted_at TIMESTAMPTZ{{end}}
 );
 {{range .Fields}}{{if .HasIndex}}
 CREATE INDEX{{if or .IsJSON .IsArray}} idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}} USING GIN ({{.Name}});
 {{- else}} idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}({{.Name}});
 {{- end}}{{end}}{{end}}
+{{- range .UniqueTogether}}
+CREATE UNIQUE INDEX IF NOT EXISTS {{.Name}} ON {{$.TableName}}({{.ColsCS}});
+{{- end}}
 CREATE OR REPLACE FUNCTION trg_set_updated_at()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
@@ -808,12 +823,16 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
     {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}},
 {{- end}}
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(){{if .SoftDelete}},
+    deleted_at TIMESTAMPTZ{{end}}
 );
 {{range .Fields}}{{if .HasIndex}}
 CREATE INDEX{{if or .IsJSON .IsArray}} idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}} USING GIN ({{.Name}});
 {{- else}} idx_{{$.TableName}}_{{.Name}} ON {{$.TableName}}({{.Name}});
 {{- end}}{{end}}{{end}}
+{{- range .UniqueTogether}}
+CREATE UNIQUE INDEX IF NOT EXISTS {{.Name}} ON {{$.TableName}}({{.ColsCS}});
+{{- end}}
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION trg_set_updated_at()
 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -826,6 +845,9 @@ CREATE TRIGGER trg_{{.TableName}}_updated_at
     FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 
 -- +goose Down
+{{- range .UniqueTogether}}
+DROP INDEX IF EXISTS {{.Name}};
+{{- end}}
 DROP TRIGGER IF EXISTS trg_{{.TableName}}_updated_at ON {{.TableName}};
 DROP TABLE IF EXISTS {{.TableName}};
 `
@@ -1762,3 +1784,49 @@ templ [[.Name]]Show(item domain.[[.Name]]) {
 	}
 }
 `
+
+// migrationAddSoftDeleteTmpl generates ALTER TABLE ADD COLUMN deleted_at.
+const migrationAddSoftDeleteTmpl = `
+-- +goose Up
+ALTER TABLE {{.TableName}} ADD COLUMN deleted_at {{if .IsPostgres}}TIMESTAMPTZ{{else}}DATETIME{{end}};
+
+-- +goose Down
+ALTER TABLE {{.TableName}} DROP COLUMN deleted_at;
+`
+
+// migrationDropSoftDeleteTmpl generates ALTER TABLE DROP COLUMN deleted_at.
+const migrationDropSoftDeleteTmpl = `
+-- +goose Up
+ALTER TABLE {{.TableName}} DROP COLUMN deleted_at;
+
+-- +goose Down
+ALTER TABLE {{.TableName}} ADD COLUMN deleted_at {{if .IsPostgres}}TIMESTAMPTZ{{else}}DATETIME{{end}};
+`
+
+// migrationAddUniqueTogetherTmpl generates CREATE UNIQUE INDEX for unique-together constraints.
+const migrationAddUniqueTogetherTmpl = `
+-- +goose Up
+{{- range .AddedUniqueTogether}}
+CREATE UNIQUE INDEX IF NOT EXISTS {{.Name}} ON {{$.TableName}}({{.ColsCS}});
+{{- end}}
+
+-- +goose Down
+{{- range .AddedUniqueTogether}}
+DROP INDEX IF EXISTS {{.Name}};
+{{- end}}
+`
+
+// migrationDropUniqueTogetherTmpl generates DROP INDEX for unique-together constraints.
+const migrationDropUniqueTogetherTmpl = `
+-- +goose Up
+{{- range .RemovedUniqueTogether}}
+DROP INDEX IF EXISTS {{.Name}};
+{{- end}}
+
+-- +goose Down
+{{- range .RemovedUniqueTogether}}
+CREATE UNIQUE INDEX IF NOT EXISTS {{.Name}} ON {{$.TableName}}({{.ColsCS}});
+{{- end}}
+`
+
+

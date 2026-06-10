@@ -77,7 +77,7 @@ Refuses to scaffold into a non-empty directory (a lone `.git/` or other dotfiles
 Generate or update the full CRUD scaffold for a model. Routes are mounted automatically in `app.go`.
 
 ```
-scaffold gen <Model> [field:type{modifier}!...] [--remove <field>...] [--dry-run] [--table-name <name>] [--no-handler]
+scaffold gen <Model> [field:type{modifier}!...] [--remove <field>...] [--dry-run] [--table-name <name>] [--no-handler] [--soft-delete] [--unique-together <fields>]
 ```
 
 Running `gen` again on an existing model **merges** the fields you pass into the stored set: a field name that already exists is updated in place, a new name is **added**, and fields you don't mention are **kept**. Passing a subset never drops columns. To drop a field, name it with `--remove`. Adding/removing fields writes a diff migration; your hand-written files are never overwritten.
@@ -91,6 +91,8 @@ Running `gen` again on an existing model **merges** the fields you pass into the
 | `--dry-run` | Preview changes without writing files |
 | `--table-name` | Override the auto-pluralized table name (e.g. `people` for `Person`) |
 | `--no-handler` | Skip generating HTTP/gRPC handlers and routes (allows pure service/domain models) |
+| `--soft-delete` | Enable soft deletion by tracking deletion timestamp in a `deleted_at` field |
+| `--unique-together` | Define compound unique constraint(s) (comma-separated fields, e.g. `name,category`, can be repeated) |
 
 #### Field syntax
 
@@ -184,10 +186,15 @@ scaffold gen Person name:string! --table-name people
 Remove all scaffold files for a model and create a `DROP TABLE` migration.
 
 ```
-scaffold destroy <Model>
+scaffold destroy <Model> [--keep-custom] [--force]
 ```
 
-Prompts for confirmation. Deletes generated AND hand-written files for the model — back up custom logic first.
+Prompts for confirmation. By default, it deletes both generated and hand-written files for the model, but automatically creates a backup of any custom hand-written files in `.scaffold/backups/<timestamp>/` before deleting.
+
+| Flag | Description |
+|------|-------------|
+| `--keep-custom` | Only delete generated files (`*_gen.go` and templates), keeping your hand-written logic (`{model}.go`, `_service.go`, `_store.go`, `_handler.go`, and `.templ` views). |
+| `--force` | Force model destruction even if other scaffolded models have active foreign key references (`fk=`) targeting this model's table. |
 
 ---
 

@@ -52,7 +52,12 @@ EXAMPLES
 	RunE: runDestroy,
 }
 
+var keepCustom bool
+var forceDestroy bool
+
 func init() {
+	destroyCmd.Flags().BoolVar(&keepCustom, "keep-custom", false, "Keep user-owned custom files (only delete generated files)")
+	destroyCmd.Flags().BoolVar(&forceDestroy, "force", false, "Force destruction even if other models reference this table")
 	rootCmd.AddCommand(destroyCmd)
 }
 
@@ -81,8 +86,13 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 
 	// Confirm destruction
 	fmt.Printf("This will delete scaffold files for %s and cannot be undone.\n", modelName)
-	fmt.Printf("Custom methods in %s_service.go and %s_store.go will be lost.\n",
-		model.Snake(), model.Snake())
+	if !keepCustom {
+		fmt.Printf("Custom methods in %s_service.go and %s_store.go will be lost (but backed up to .scaffold/backups/).\n",
+			model.Snake(), model.Snake())
+	} else {
+		fmt.Printf("Custom files like %s_service.go and %s_store.go will be kept.\n",
+			model.Snake(), model.Snake())
+	}
 	fmt.Print("Proceed? (y/N) ")
 
 	var input string
@@ -93,6 +103,8 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 	}
 
 	g := generator.New(root, modulePath, manifest, false)
+	g.KeepCustom = keepCustom
+	g.Force = forceDestroy
 	result, err := g.Destroy(model)
 	if err != nil {
 		return err

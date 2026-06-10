@@ -51,6 +51,8 @@ type ManifestModel struct {
 	MigrationVersion int             `json:"migrationVersion"`
 	NoHandler        bool            `json:"noHandler,omitempty"`
 	SkippedOps       []string        `json:"skippedOps,omitempty"`
+	SoftDelete       bool            `json:"softDelete,omitempty"`
+	UniqueTogether   [][]string      `json:"uniqueTogether,omitempty"`
 }
 
 // ManifestField is a serializable snapshot of a Field.

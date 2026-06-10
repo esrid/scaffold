@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/esrid/scaffold/internal/formatter"
 	"github.com/esrid/scaffold/internal/parser"
@@ -29,6 +30,12 @@ type Generator struct {
 	// Diff, when set, records a unified diff of every file that would change
 	// instead of writing it. Implies dryRun (no files are touched).
 	Diff bool
+
+	// KeepCustom, when set, prevents destroy from deleting user-owned custom files.
+	KeepCustom bool
+
+	// Force, when set, overrides safeguards (like foreign key dependency checks).
+	Force bool
 }
 
 // New creates a Generator targeting the given project root.
@@ -108,6 +115,7 @@ type Result struct {
 	Overwritten []string
 	Unchanged   []string
 	Deleted     []string
+	BackedUp    []string
 	Diffs       []string // unified diffs, populated in --diff mode
 }
 
@@ -135,6 +143,12 @@ func (r *Result) Print(w io.Writer) {
 		fmt.Fprintln(w, "\nDeleted:")
 		for _, f := range r.Deleted {
 			fmt.Fprintf(w, "  - %s\n", f)
+		}
+	}
+	if len(r.BackedUp) > 0 {
+		fmt.Fprintln(w, "\nBacked up (custom code):")
+		for _, f := range r.BackedUp {
+			fmt.Fprintf(w, "  -> %s\n", f)
 		}
 	}
 	if len(r.Diffs) > 0 {
@@ -199,49 +213,92 @@ func (g *Generator) Scaffold(model *parser.Model) (*Result, error) {
 
 // Destroy removes all scaffold files for the given model.
 func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
-	res := &Result{}
-
-	files := []string{
-		filepath.Join("internal", "core", "domain", model.Snake()+"_gen.go"),
-		filepath.Join("internal", "core", "domain", model.Snake()+".go"),
-		filepath.Join("internal", "core", "ports", model.Snake()+".go"),
-		filepath.Join("internal", "core", "services", model.Snake()+"_service_gen.go"),
-		filepath.Join("internal", "core", "services", model.Snake()+"_service.go"),
-		filepath.Join("internal", "adapters", "store", model.Snake()+"_store_gen.go"),
-		filepath.Join("internal", "adapters", "store", model.Snake()+"_store.go"),
-	}
-	if !model.NoHandler && g.isSSR() {
-		files = append(files,
-			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"),
-			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go"),
-		)
-		// Remove the templ view source and any generated *_templ.go counterpart.
-		viewSrc := filepath.Join("web", "views", model.Snake()+".templ")
-		viewGen := filepath.Join("web", "views", model.Snake()+"_templ.go")
-		for _, rel := range []string{viewSrc, viewGen} {
-			abs := filepath.Join(g.root, rel)
-			existed := fileExists(abs)
-			if !g.dryRun {
-				if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
-					return nil, fmt.Errorf("destroy: remove %s: %w", rel, err)
+	// Check if other models reference this model's table via foreign key
+	var referencers []string
+	targetTable := model.TableName
+	for otherName, otherModel := range g.manifest.Models {
+		if otherName == model.Name {
+			continue
+		}
+		for _, f := range otherModel.Fields {
+			for _, mod := range f.Modifiers {
+				if strings.HasPrefix(mod, "fk=") && strings.TrimPrefix(mod, "fk=") == targetTable {
+					referencers = append(referencers, fmt.Sprintf("%s (%s)", otherName, f.Name))
 				}
-			}
-			if existed {
-				res.Deleted = append(res.Deleted, rel)
 			}
 		}
 	}
+
+	if len(referencers) > 0 && !g.Force {
+		return nil, fmt.Errorf("cannot destroy model %q: referenced by foreign key in %s (use --force to override)",
+			model.Name, strings.Join(referencers, ", "))
+	}
+
+	res := &Result{}
+
+	// User-owned custom/write-once files
+	customFiles := []string{
+		filepath.Join("internal", "core", "domain", model.Snake()+".go"),
+		filepath.Join("internal", "core", "ports", model.Snake()+".go"),
+		filepath.Join("internal", "core", "services", model.Snake()+"_service.go"),
+		filepath.Join("internal", "adapters", "store", model.Snake()+"_store.go"),
+	}
+	if !model.NoHandler && g.isSSR() {
+		customFiles = append(customFiles,
+			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go"),
+			filepath.Join("web", "views", model.Snake()+".templ"),
+		)
+	}
+
+	// Generated files (always deleted)
+	genFiles := []string{
+		filepath.Join("internal", "core", "domain", model.Snake()+"_gen.go"),
+		filepath.Join("internal", "core", "services", model.Snake()+"_service_gen.go"),
+		filepath.Join("internal", "adapters", "store", model.Snake()+"_store_gen.go"),
+	}
+	if !model.NoHandler && g.isSSR() {
+		genFiles = append(genFiles,
+			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"),
+			filepath.Join("web", "views", model.Snake()+"_templ.go"),
+		)
+	}
 	if !model.NoHandler && g.isGRPC() {
-		files = append(files,
+		genFiles = append(genFiles,
 			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".proto"),
-			// buf-generated code derived from the .proto — orphaned once it is gone.
 			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+".pb.go"),
 			filepath.Join("internal", "adapters", "grpc", "pb", model.Snake()+"_grpc.pb.go"),
 			filepath.Join("internal", "adapters", "grpc", model.Snake()+"_handler_gen.go"),
 		)
 	}
 
-	for _, rel := range files {
+	// Check if any custom files exist and back them up
+	var existingCustom []string
+	for _, rel := range customFiles {
+		abs := filepath.Join(g.root, rel)
+		if fileExists(abs) {
+			existingCustom = append(existingCustom, rel)
+		}
+	}
+
+	if len(existingCustom) > 0 && !g.dryRun {
+		timestamp := time.Now().Format("20060102150405")
+		backupBase := filepath.Join(g.root, ".scaffold", "backups", timestamp)
+		for _, rel := range existingCustom {
+			abs := filepath.Join(g.root, rel)
+			backupPath := filepath.Join(backupBase, rel)
+			if err := copyFile(abs, backupPath); err != nil {
+				return nil, fmt.Errorf("destroy backup %s: %w", rel, err)
+			}
+			res.BackedUp = append(res.BackedUp, rel)
+		}
+	} else if len(existingCustom) > 0 && g.dryRun {
+		for _, rel := range existingCustom {
+			res.BackedUp = append(res.BackedUp, rel)
+		}
+	}
+
+	// Delete generated files
+	for _, rel := range genFiles {
 		abs := filepath.Join(g.root, rel)
 		existed := fileExists(abs)
 		if !g.dryRun {
@@ -249,8 +306,26 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 				return nil, fmt.Errorf("destroy: remove %s: %w", rel, err)
 			}
 		}
-		// Only report files that were actually present, so optional artifacts
-		// (e.g. .pb.go before `make proto`) don't show as deleted phantoms.
+		if existed {
+			res.Deleted = append(res.Deleted, rel)
+		}
+	}
+
+	// Delete custom files if not KeepCustom
+	for _, rel := range customFiles {
+		abs := filepath.Join(g.root, rel)
+		existed := fileExists(abs)
+		if g.KeepCustom {
+			if existed {
+				res.Unchanged = append(res.Unchanged, rel)
+			}
+			continue
+		}
+		if !g.dryRun {
+			if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("destroy: remove %s: %w", rel, err)
+			}
+		}
 		if existed {
 			res.Deleted = append(res.Deleted, rel)
 		}
@@ -438,7 +513,8 @@ func (g *Generator) scaffoldUpdate(model *parser.Model, res *Result) error {
 
 	// migration — diff fields
 	added, removed := model.DiffFields()
-	if len(added) > 0 || len(removed) > 0 {
+	addedUT, removedUT := diffUniqueTogether(model.PrevUniqueTogether, model.UniqueTogether)
+	if len(added) > 0 || len(removed) > 0 || model.SoftDelete != model.PrevSoftDelete || len(addedUT) > 0 || len(removedUT) > 0 {
 		if err := g.writeAlterMigration(model, added, removed, res); err != nil {
 			return err
 		}
@@ -712,6 +788,18 @@ func (g *Generator) writeAlterMigration(model *parser.Model, added, removed []pa
 	}
 	if len(removed) > 0 {
 		tmplStr += migrationDropColTmpl
+	}
+	if model.SoftDelete && !model.PrevSoftDelete {
+		tmplStr += migrationAddSoftDeleteTmpl
+	} else if !model.SoftDelete && model.PrevSoftDelete {
+		tmplStr += migrationDropSoftDeleteTmpl
+	}
+	addedUT, removedUT := diffUniqueTogether(model.PrevUniqueTogether, model.UniqueTogether)
+	if len(addedUT) > 0 {
+		tmplStr += migrationAddUniqueTogetherTmpl
+	}
+	if len(removedUT) > 0 {
+		tmplStr += migrationDropUniqueTogetherTmpl
 	}
 
 	return g.writeSQLFile(rel, tmplStr, ctx, res)
@@ -1064,8 +1152,8 @@ func goTypeSize(goType string) int {
 	}
 }
 
-func buildFieldLines(fields []templateField, db string) string {
-	allFields := make([]templateField, len(fields), len(fields)+3)
+func buildFieldLines(fields []templateField, db string, softDelete bool) string {
+	allFields := make([]templateField, len(fields), len(fields)+4)
 	copy(allFields, fields)
 
 	// System fields are always present.
@@ -1074,6 +1162,9 @@ func buildFieldLines(fields []templateField, db string) string {
 		templateField{GoName: "CreatedAt", GoType: "time.Time", Name: "created_at"},
 		templateField{GoName: "UpdatedAt", GoType: "time.Time", Name: "updated_at"},
 	)
+	if softDelete {
+		allFields = append(allFields, templateField{GoName: "DeletedAt", GoType: "*time.Time", Name: "deleted_at"})
+	}
 
 	// Sort fields from largest to smallest size to optimize memory alignment / struct packing.
 	// In case of size ties, sort alphabetically by GoName to be deterministic.
@@ -1107,15 +1198,64 @@ func buildMigrationCtx(model *parser.Model, added, removed []parser.Field, db st
 	default:
 		idDef = "id TEXT PRIMARY KEY DEFAULT (uuid7())"
 	}
-	return migrationCtx{
-		Name:       model.Name,
-		TableName:  model.TableName,
-		Fields:     buildTemplateFields(model.Fields, db),
-		Added:      prepareAlterFields(buildTemplateFields(added, db), db),
-		Removed:    prepareAlterFields(buildTemplateFields(removed, db), db),
-		IDDef:      idDef,
-		IsPostgres: db == "postgres",
+
+	mapUniqueTogether := func(ut [][]string) []compoundUniqueIndex {
+		var out []compoundUniqueIndex
+		for _, cols := range ut {
+			out = append(out, compoundUniqueIndex{
+				Name:    compoundIndexName(model.TableName, cols),
+				Columns: cols,
+				ColsCS:  strings.Join(cols, ", "),
+			})
+		}
+		return out
 	}
+
+	addedUT, removedUT := diffUniqueTogether(model.PrevUniqueTogether, model.UniqueTogether)
+
+	return migrationCtx{
+		Name:                  model.Name,
+		TableName:             model.TableName,
+		Fields:                buildTemplateFields(model.Fields, db),
+		Added:                 prepareAlterFields(buildTemplateFields(added, db), db),
+		Removed:               prepareAlterFields(buildTemplateFields(removed, db), db),
+		IDDef:                 idDef,
+		IsPostgres:            db == "postgres",
+		SoftDelete:            model.SoftDelete,
+		SoftDeleteJustEnabled: model.SoftDeleteJustEnabled,
+		UniqueTogether:        mapUniqueTogether(model.UniqueTogether),
+		AddedUniqueTogether:   mapUniqueTogether(addedUT),
+		RemovedUniqueTogether: mapUniqueTogether(removedUT),
+	}
+}
+
+func compoundIndexName(tableName string, cols []string) string {
+	return fmt.Sprintf("idx_%s_%s_unique", tableName, strings.Join(cols, "_"))
+}
+
+func diffUniqueTogether(prev, curr [][]string) (added, removed [][]string) {
+	prevMap := make(map[string][]string)
+	for _, cols := range prev {
+		prevMap[strings.Join(cols, ",")] = cols
+	}
+	currMap := make(map[string][]string)
+	for _, cols := range curr {
+		currMap[strings.Join(cols, ",")] = cols
+	}
+
+	for _, cols := range curr {
+		k := strings.Join(cols, ",")
+		if _, exists := prevMap[k]; !exists {
+			added = append(added, cols)
+		}
+	}
+	for _, cols := range prev {
+		k := strings.Join(cols, ",")
+		if _, exists := currMap[k]; !exists {
+			removed = append(removed, cols)
+		}
+	}
+	return
 }
 
 // replaceMarkerBlock replaces the section from startMark to endMark (inclusive) with newBlock.
@@ -1148,4 +1288,27 @@ func removeMarkerBlock(content, startMark, endMark string) (string, error) {
 		endIdx++
 	}
 	return content[:startIdx] + content[endIdx:], nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }

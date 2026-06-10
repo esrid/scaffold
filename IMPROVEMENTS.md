@@ -196,3 +196,57 @@ Résultat : **zéro marker, zéro édition de généré**, modèle 100 % cohére
 3. **P2** ✅ (ops granulaires `--skip`/`--only`) — fait + testé sur tous les modes.
 4. **P4** ✅ markers retirés (domaine split + routes_gen.go) ; seul schema.sql garde des markers (volontaire).
 5. **P5** ✅ en-têtes de contrat + `--diff` (reste : portabilité `.dylib`, connu/hors polish).
+
+---
+
+## Future Improvements & Edge Cases (June 2026)
+
+### 1. Database Integrity & Constraint Safety
+
+#### 1.1 Cross-Reference Constraints on Model Deletion (`scaffold destroy`)
+* **Problem:** Destroying a model (e.g. `scaffold destroy ModelA`) drops its table. If another model `ModelB` has a foreign key referencing it (e.g. `fk=model_a`), the `DROP TABLE` migration will fail at execution time on databases with active foreign keys.
+* **Fix:** In `Generator.Destroy(model)`, scan the manifest of models for any field containing `fk=<target_table>`. If referencing fields are found, either block the operation or issue a warning listing the dependent tables and fields.
+
+#### 1.2 Validation of Foreign Key Targets during Generation (`scaffold gen`)
+* **Problem:** `scaffold gen Post user_id:string,fk=users` only checks if `users` is a valid SQL identifier, not if it exists as a model in the project manifest.
+* **Fix:** Inspect the manifest to verify the target table exists, and output a warning if it is missing:
+  `Warning: Foreign key target table "users" is not present in the manifest of scaffolded models. Make sure this table exists in your database.`
+
+#### 1.3 SQLite Foreign Key Enforcement at Runtime
+* **Problem:** Although the default DSN includes `_foreign_keys=on`, SQLite disables foreign keys by default at the connection level. If a developer uses a custom DSN or runs tests without this query parameter, SQLite silently ignores all foreign key constraints.
+* **Fix:** Explicitly enforce foreign keys programmatically inside `sqlite/store.go.tmpl`:
+  ```go
+  _, err = db.Exec("PRAGMA foreign_keys = ON;")
+  ```
+
+### 2. Developer Experience & Safeguards
+
+#### 2.1 Destruction Backup System (`scaffold destroy` Safety Net)
+* **Problem:** `scaffold destroy` deletes the user-owned custom files (e.g., `{model}_service.go`, `{model}_store.go`, `{model}_handler.go`, `*.templ`) which contain hand-written business logic, with only a simple confirmation prompt.
+* **Fix:** 
+  1. Add a `--keep-custom` flag to only delete generated (`_gen.go`) files and write migrations.
+  2. Implement an automatic backup: copy the user-owned files to `.scaffold/backups/<timestamp>/` before deleting them.
+
+#### 2.2 SQLite WAL Mode & Concurrency Tuning
+* **Problem:** `sqlite/store.go.tmpl` hardcodes `SetMaxOpenConns(1)` to avoid database locking, which serializes all concurrent operations.
+* **Fix:** Since WAL mode is enabled by default, SQLite supports concurrent readers. By programmatically executing `PRAGMA journal_mode=WAL;` and setting `PRAGMA busy_timeout=5000;` on startup, the pool can safely allow multiple connections (e.g. `SetMaxOpenConns(10)`), allowing concurrent reads to speed up SSR/REST pages under concurrent traffic.
+
+### 3. Advanced Production-Ready Features
+
+#### 3.1 Multi-Column Constraints (Indexes and Uniques)
+* **Problem:** Real-world schemas often require composite constraints (e.g., a unique constraint on `(project_id, slug)` or a compound index on `(category_id, created_at)`). The current syntax only allows single-column modifiers.
+* **Fix:** Add flag support for composite constraints during `scaffold gen`, such as `--unique-together project_id,slug`.
+
+#### 3.2 Soft Deletes
+* **Problem:** Directly deleting rows with `DELETE` is dangerous or discouraged in production. Soft deletion (setting a `deleted_at` timestamp) is preferred.
+* **Fix:** Introduce a `--soft-delete` flag to `scaffold gen`. When enabled, it:
+  * Adds a `deleted_at` nullable timestamp column.
+  * Updates the generated `Delete()` store method to run an `UPDATE` instead of `DELETE`.
+  * Appends `WHERE deleted_at IS NULL` to all generated queries (`Get` and `List`).
+
+### 4. Code Quality & Tooling Inconsistencies
+
+#### 4.1 Import Formatting and Lint Compliance
+* **Problem:** Formatting uses `go/format` (`gofmt`), which groups all imports (standard library, third-party, local module) into a single block and sorts them alphabetically. This causes linting failures (like `goimports` or `gci`).
+* **Fix:** Use `golang.org/x/tools/imports` in `formatter.GoSource` to format imports according to idiomatic Go grouping rules.
+

@@ -705,3 +705,318 @@ func TestScaffold_NoHandler_SkipsHTTP(t *testing.T) {
 		t.Error("expected routes_gen.go to not mount Product routes")
 	}
 }
+
+func TestDestroy_BackupAndKeepCustom(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+	model := genModel(t, manifest, "Product", "name:string!")
+	runScaffold(t, root, manifest, model)
+
+	// Add custom code into one of the write-once files
+	customStorePath := filepath.Join(root, "internal", "adapters", "store", "product_store.go")
+	customContent := "// custom method here"
+	if err := os.WriteFile(customStorePath, []byte(customContent), 0644); err != nil {
+		t.Fatalf("write custom store: %v", err)
+	}
+
+	// 1. First, test with KeepCustom = true. Custom files should be kept.
+	g1 := generator.New(root, testModule, manifest, false)
+	g1.KeepCustom = true
+	_, err := g1.Destroy(model)
+	if err != nil {
+		t.Fatalf("Destroy (KeepCustom=true) failed: %v", err)
+	}
+
+	// Generated files must be gone
+	assertNotExists(t, root, "internal/adapters/store/product_store_gen.go")
+	assertNotExists(t, root, "internal/core/domain/product_gen.go")
+
+	// Custom files must still exist
+	assertExists(t, root, "internal/core/domain/product.go")
+	assertExists(t, root, "internal/core/ports/product.go")
+	assertExists(t, root, "internal/core/services/product_service.go")
+	storeContent := assertExists(t, root, "internal/adapters/store/product_store.go")
+	if storeContent != customContent {
+		t.Errorf("expected custom file content to be preserved, got %q", storeContent)
+	}
+
+	// Check that backup was created
+	backupsDir := filepath.Join(root, ".scaffold", "backups")
+	entries, err := os.ReadDir(backupsDir)
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 backup folder, got %d", len(entries))
+	}
+	backupFolder := filepath.Join(backupsDir, entries[0].Name())
+	backupStorePath := filepath.Join(backupFolder, "internal", "adapters", "store", "product_store.go")
+	backupContent, err := os.ReadFile(backupStorePath)
+	if err != nil {
+		t.Fatalf("read backup file: %v", err)
+	}
+	if string(backupContent) != customContent {
+		t.Errorf("expected backup file content %q, got %q", customContent, string(backupContent))
+	}
+
+	// Re-add to manifest for second step (we want to simulate deleting it without KeepCustom)
+	manifest.Models["Product"] = model.ManifestEntry()
+
+	// 2. Test with KeepCustom = false. Custom files must be deleted.
+	g2 := generator.New(root, testModule, manifest, false)
+	g2.KeepCustom = false
+	_, err = g2.Destroy(model)
+	if err != nil {
+		t.Fatalf("Destroy (KeepCustom=false) failed: %v", err)
+	}
+
+	// Now custom files must also be deleted
+	assertNotExists(t, root, "internal/core/domain/product.go")
+	assertNotExists(t, root, "internal/core/ports/product.go")
+	assertNotExists(t, root, "internal/core/services/product_service.go")
+	assertNotExists(t, root, "internal/adapters/store/product_store.go")
+}
+
+func TestScaffold_FK_TargetValidationWarning(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+
+	// 1. Create a model with fk referencing a missing table
+	fs, err := parser.ParseFields([]string{"user_id:string,fk=users!"})
+	if err != nil {
+		t.Fatalf("ParseFields: %v", err)
+	}
+	model, err := parser.BuildModel("Post", fs, nil, manifest, "", false)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+
+	// Should contain a warning about "users" target table
+	if len(model.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(model.Warnings))
+	}
+	expectedWarning := `foreign key target table "users" for field "user_id" does not exist`
+	if !strings.Contains(model.Warnings[0], expectedWarning) {
+		t.Errorf("expected warning to contain %q, got %q", expectedWarning, model.Warnings[0])
+	}
+
+	// 2. Now scaffold the "User" model so the table exists
+	userModel := genModel(t, manifest, "User", "name:string!")
+	runScaffold(t, root, manifest, userModel)
+
+	// Build "Post" again, warning should be gone
+	model2, err := parser.BuildModel("Post", fs, nil, manifest, "", false)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	if len(model2.Warnings) != 0 {
+		t.Errorf("expected 0 warnings after target model was scaffolded, got %v", model2.Warnings)
+	}
+}
+
+func TestDestroy_FK_ReferencingBlocksAndForce(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+
+	// Scaffold "User"
+	userModel := genModel(t, manifest, "User", "name:string!")
+	runScaffold(t, root, manifest, userModel)
+
+	// Scaffold "Post" referencing "users"
+	postModel := genModel(t, manifest, "Post", "user_id:string,fk=users!")
+	runScaffold(t, root, manifest, postModel)
+
+	// Attempt to destroy "User" without force. It should fail because of referencing constraint.
+	g1 := generator.New(root, testModule, manifest, false)
+	g1.Force = false
+	_, err := g1.Destroy(userModel)
+	if err == nil {
+		t.Fatal("expected Destroy to fail because of active foreign key referencing constraint, but it succeeded")
+	}
+	expectedErr := `cannot destroy model "User": referenced by foreign key in Post (user_id)`
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Errorf("expected error %q, got %q", expectedErr, err.Error())
+	}
+
+	// Attempt to destroy "User" WITH force. It should succeed.
+	g2 := generator.New(root, testModule, manifest, false)
+	g2.Force = true
+	_, err = g2.Destroy(userModel)
+	if err != nil {
+		t.Fatalf("expected Destroy to succeed with Force=true, but got error: %v", err)
+	}
+
+	// User should be deleted successfully
+	assertNotExists(t, root, "internal/core/domain/user_gen.go")
+}
+
+func TestScaffold_SoftDelete(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+
+	// 1. Scaffold new model with soft-delete enabled
+	model := genModel(t, manifest, "Product", "name:string!")
+	model.SoftDelete = true
+	manifest.Models["Product"] = model.ManifestEntry()
+
+	runScaffold(t, root, manifest, model)
+	model.IsNew = false
+
+	// Verify domain model contains DeletedAt field
+	domainContent := assertExists(t, root, "internal/core/domain/product_gen.go")
+	if !strings.Contains(domainContent, "DeletedAt *time.Time") {
+		t.Error("expected domain struct to contain DeletedAt *time.Time")
+	}
+
+	// Verify store queries filter by deleted_at IS NULL and soft-delete on Delete
+	storeContent := assertExists(t, root, "internal/adapters/store/product_store_gen.go")
+	if !strings.Contains(storeContent, "deleted_at IS NULL") {
+		t.Error("expected store queries to contain 'deleted_at IS NULL' filters")
+	}
+	if !strings.Contains(storeContent, "UPDATE products SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL") {
+		t.Error("expected store Delete to be a soft-delete UPDATE query")
+	}
+
+	// Verify migration creates the deleted_at column
+	migDir := filepath.Join(root, "internal", "adapters", "store", "migrations")
+	migEntries, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	if len(migEntries) != 1 {
+		t.Fatalf("expected 1 migration, got %d", len(migEntries))
+	}
+	migContent := readFile(t, root, filepath.Join("internal/adapters/store/migrations", migEntries[0].Name()))
+	t.Logf("--- Migration 1 ---\n%s", migContent)
+	if !strings.Contains(migContent, "deleted_at DATETIME") {
+		t.Error("expected migration to create deleted_at column")
+	}
+
+	// 2. Re-gen disabling soft-delete
+	fs, err := parser.ParseFields([]string{"name:string!"})
+	if err != nil {
+		t.Fatalf("ParseFields: %v", err)
+	}
+	model, err = parser.BuildModel("Product", fs, nil, manifest, "", false)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	model.PrevSoftDelete = true
+	model.SoftDelete = false
+	model.SoftDeleteJustEnabled = false
+	model.MigrationVersion = parser.NextMigrationVersion(manifest)
+	manifest.Models["Product"] = model.ManifestEntry()
+
+	runScaffold(t, root, manifest, model)
+
+	// Verify domain model no longer contains DeletedAt field
+	domainContent2 := assertExists(t, root, "internal/core/domain/product_gen.go")
+	if strings.Contains(domainContent2, "DeletedAt *time.Time") {
+		t.Error("expected domain struct to NOT contain DeletedAt after disabling soft-delete")
+	}
+
+	// Verify alter migration drops the deleted_at column
+	migEntries2, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	if len(migEntries2) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(migEntries2))
+	}
+	// The second migration should be the alter migration dropping deleted_at
+	migContent2 := readFile(t, root, filepath.Join("internal/adapters/store/migrations", migEntries2[1].Name()))
+	t.Logf("--- Migration 2 ---\n%s", migContent2)
+	if !strings.Contains(migContent2, "ALTER TABLE products DROP COLUMN deleted_at;") {
+		t.Error("expected alter migration to drop deleted_at column")
+	}
+
+	// 3. Re-gen enabling soft-delete back
+	model, err = parser.BuildModel("Product", fs, nil, manifest, "", false)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	model.PrevSoftDelete = false
+	model.SoftDelete = true
+	model.SoftDeleteJustEnabled = true
+	model.MigrationVersion = parser.NextMigrationVersion(manifest)
+	manifest.Models["Product"] = model.ManifestEntry()
+
+	runScaffold(t, root, manifest, model)
+
+	// Verify alter migration adds the deleted_at column back
+	migEntries3, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	if len(migEntries3) != 3 {
+		t.Fatalf("expected 3 migrations, got %d", len(migEntries3))
+	}
+	migContent3 := readFile(t, root, filepath.Join("internal/adapters/store/migrations", migEntries3[2].Name()))
+	t.Logf("--- Migration 3 ---\n%s", migContent3)
+	if !strings.Contains(migContent3, "ALTER TABLE products ADD COLUMN deleted_at DATETIME;") {
+		t.Error("expected alter migration to add deleted_at column")
+	}
+}
+
+func TestScaffold_UniqueTogether(t *testing.T) {
+	root, manifest := projectSetup(t, "sqlite", "rest")
+
+	// 1. Scaffold new model with unique-together enabled
+	model := genModel(t, manifest, "Product", "name:string!", "category:string!")
+	model.UniqueTogether = [][]string{{"name", "category"}}
+	manifest.Models["Product"] = model.ManifestEntry()
+
+	runScaffold(t, root, manifest, model)
+	model.IsNew = false
+
+	// Verify schema.sql contains compound unique index
+	schemaContent := assertExists(t, root, "internal/adapters/store/schema.sql")
+	if !strings.Contains(schemaContent, "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_category_unique ON products(name, category);") {
+		t.Error("expected schema.sql to contain compound unique index")
+	}
+
+	// Verify initial migration creates compound unique index
+	migDir := filepath.Join(root, "internal", "adapters", "store", "migrations")
+	migEntries, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	if len(migEntries) != 1 {
+		t.Fatalf("expected 1 migration, got %d", len(migEntries))
+	}
+	migContent := readFile(t, root, filepath.Join("internal/adapters/store/migrations", migEntries[0].Name()))
+	if !strings.Contains(migContent, "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_category_unique ON products(name, category);") {
+		t.Error("expected initial migration to create compound unique index")
+	}
+
+	// 2. Re-gen adding a new compound unique index and removing the old one
+	fs, err := parser.ParseFields([]string{"name:string!", "category:string!", "sku:string!", "vendor:string!"})
+	if err != nil {
+		t.Fatalf("ParseFields: %v", err)
+	}
+	model, err = parser.BuildModel("Product", fs, nil, manifest, "", false)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	model.IsNew = false
+	model.PrevUniqueTogether = [][]string{{"name", "category"}}
+	model.UniqueTogether = [][]string{{"sku", "vendor"}}
+	model.MigrationVersion = parser.NextMigrationVersion(manifest)
+	manifest.Models["Product"] = model.ManifestEntry()
+
+	runScaffold(t, root, manifest, model)
+
+	// Verify alter migration drops old index and creates new compound index
+	migEntries2, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	if len(migEntries2) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(migEntries2))
+	}
+	migContent2 := readFile(t, root, filepath.Join("internal/adapters/store/migrations", migEntries2[1].Name()))
+	t.Logf("--- UniqueTogether Alter Migration ---\n%s", migContent2)
+	if !strings.Contains(migContent2, "DROP INDEX IF EXISTS idx_products_name_category_unique;") {
+		t.Error("expected alter migration to drop old compound unique index")
+	}
+	if !strings.Contains(migContent2, "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_sku_vendor_unique ON products(sku, vendor);") {
+		t.Error("expected alter migration to create new compound unique index")
+	}
+}
+

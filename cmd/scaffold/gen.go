@@ -11,14 +11,16 @@ import (
 )
 
 var (
-	dryRun       bool
-	tableName    string
-	removeFields []string
-	noHandler    bool
-	skipOps      []string
-	onlyOps      []string
-	regenViews   bool
-	diffMode     bool
+	dryRun         bool
+	tableName      string
+	removeFields   []string
+	noHandler      bool
+	skipOps        []string
+	onlyOps        []string
+	regenViews     bool
+	diffMode       bool
+	softDelete     bool
+	uniqueTogether []string
 )
 
 var genCmd = &cobra.Command{
@@ -162,6 +164,8 @@ func init() {
 	genCmd.Flags().StringSliceVar(&onlyOps, "only", nil, "Generate ONLY these CRUD ops (mutually exclusive with --skip)")
 	genCmd.Flags().BoolVar(&regenViews, "regen-views", false, "Overwrite SSR views (default: write-once — views are never clobbered once created)")
 	genCmd.Flags().BoolVar(&diffMode, "diff", false, "Show a unified diff of what would change, without writing any files")
+	genCmd.Flags().BoolVar(&softDelete, "soft-delete", false, "Enable soft deletion (stores deletion timestamp in deleted_at field)")
+	genCmd.Flags().StringArrayVar(&uniqueTogether, "unique-together", nil, "Define compound unique constraint(s) (comma-separated fields, e.g. 'name,category')")
 	rootCmd.AddCommand(genCmd)
 }
 
@@ -189,9 +193,50 @@ func runGen(cmd *cobra.Command, args []string) error {
 	}
 	manifest.Module = modulePath
 
+	var useSoftDelete bool
+	if cmd.Flags().Changed("soft-delete") {
+		useSoftDelete = softDelete
+	} else if existing, exists := manifest.Models[modelName]; exists {
+		useSoftDelete = existing.SoftDelete
+	}
+
+	var useUniqueTogether [][]string
+	if cmd.Flags().Changed("unique-together") {
+		for _, ut := range uniqueTogether {
+			parts := strings.Split(ut, ",")
+			var cleanParts []string
+			for _, p := range parts {
+				trimmed := strings.TrimSpace(p)
+				if trimmed != "" {
+					cleanParts = append(cleanParts, trimmed)
+				}
+			}
+			if len(cleanParts) > 1 {
+				useUniqueTogether = append(useUniqueTogether, cleanParts)
+			}
+		}
+	} else if existing, exists := manifest.Models[modelName]; exists {
+		useUniqueTogether = existing.UniqueTogether
+	}
+
 	model, err := parser.BuildModel(modelName, fields, removeFields, manifest, tableName, noHandler)
 	if err != nil {
 		return err
+	}
+
+	model.SoftDelete = useSoftDelete
+	model.UniqueTogether = useUniqueTogether
+	if existing, exists := manifest.Models[modelName]; exists {
+		model.PrevSoftDelete = existing.SoftDelete
+		model.SoftDeleteJustEnabled = model.SoftDelete && !model.PrevSoftDelete
+		model.PrevUniqueTogether = existing.UniqueTogether
+		if model.SoftDelete != model.PrevSoftDelete || !equalUniqueTogether(model.UniqueTogether, model.PrevUniqueTogether) {
+			model.MigrationVersion = parser.NextMigrationVersion(manifest)
+		}
+	}
+
+	for _, w := range model.Warnings {
+		fmt.Printf("⚠ Warning: %s\n", w)
 	}
 
 	// --only / --skip override the model's CRUD ops for this run (authoritative).
@@ -244,4 +289,21 @@ func runGen(cmd *cobra.Command, args []string) error {
 
 	result.Print(os.Stdout)
 	return nil
+}
+
+func equalUniqueTogether(a, b [][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if len(a[i]) != len(b[i]) {
+			return false
+		}
+		for j := range a[i] {
+			if a[i][j] != b[i][j] {
+				return false
+			}
+		}
+	}
+	return true
 }
