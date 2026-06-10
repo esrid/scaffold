@@ -1,0 +1,90 @@
+// Package flash implements one-shot messages passed across a redirect via a
+// short-lived cookie, in the spirit of Rails' flash. Messages are display-only
+// hints (escaped by templ on render), so the cookie is not signed.
+package flash
+
+import (
+	"context"
+	"encoding/base64"
+	"net/http"
+	"strings"
+)
+
+const cookieName = "_flash"
+
+type Kind string
+
+const (
+	Success Kind = "success"
+	Error   Kind = "error"
+	Info    Kind = "info"
+)
+
+// Message is a one-shot notification rendered by the layout on the next page load.
+type Message struct {
+	Kind Kind
+	Text string
+}
+
+type ctxKey struct{}
+
+// Set queues a message for display on the next full page render.
+// Must be called before writing the response body or redirecting.
+func Set(w http.ResponseWriter, kind Kind, text string) {
+	value := base64.RawURLEncoding.EncodeToString([]byte(string(kind) + ":" + text))
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   60,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// Middleware pops the flash cookie into the request context for HTML
+// navigations, expiring it so the message renders exactly once. Asset and
+// API requests (Accept without text/html) leave the cookie untouched.
+func Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			if c, err := r.Cookie(cookieName); err == nil {
+				if msg := decode(c.Value); msg != nil {
+					http.SetCookie(w, &http.Cookie{
+						Name:     cookieName,
+						Path:     "/",
+						MaxAge:   -1,
+						HttpOnly: true,
+						SameSite: http.SameSiteLaxMode,
+					})
+					r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, msg))
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// From returns the message popped by Middleware for this request, or nil.
+func From(ctx context.Context) *Message {
+	msg, _ := ctx.Value(ctxKey{}).(*Message)
+	return msg
+}
+
+func decode(raw string) *Message {
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil
+	}
+	kind, text, ok := strings.Cut(string(b), ":")
+	if !ok || text == "" {
+		return nil
+	}
+	// Only known kinds render; anything else (e.g. a hand-crafted cookie) is dropped.
+	switch Kind(kind) {
+	case Success, Error, Info:
+		return &Message{Kind: Kind(kind), Text: text}
+	default:
+		return nil
+	}
+}
