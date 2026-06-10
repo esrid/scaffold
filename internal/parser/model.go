@@ -53,7 +53,7 @@ func BuildModel(name string, fields []Field, removeFields []string, manifest *Ma
 	}
 
 	if tableName == "" {
-		tableName = pluralizeClient.Plural(strings.ToLower(name))
+		tableName = pluralizeClient.Plural(toSnakeCase(name))
 	} else if err := validateSQLIdentifier("--table-name", tableName); err != nil {
 		return nil, err
 	}

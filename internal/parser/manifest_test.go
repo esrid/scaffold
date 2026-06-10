@@ -501,3 +501,29 @@ func TestBuildModel_MigrationVersionShouldBeGloballyUnique(t *testing.T) {
 		t.Errorf("expected migration version to be globally unique (greater than 5), got %d", model.MigrationVersion)
 	}
 }
+
+func TestBuildModel_SnakeCaseTableName(t *testing.T) {
+	cases := []struct {
+		model string
+		want  string
+	}{
+		{"UserRoadmap", "user_roadmaps"},
+		{"CanonicalStep", "canonical_steps"},
+		{"BlogPost", "blog_posts"},
+		{"Product", "products"},
+		{"User", "users"},
+	}
+	for _, c := range cases {
+		t.Run(c.model, func(t *testing.T) {
+			manifest := &Manifest{DB: "sqlite", Models: map[string]ManifestModel{}}
+			fields, _ := ParseFields([]string{"name:string!"})
+			model, err := BuildModel(c.model, fields, nil, manifest, "", false)
+			if err != nil {
+				t.Fatalf("BuildModel: %v", err)
+			}
+			if model.TableName != c.want {
+				t.Errorf("TableName: got %q want %q", model.TableName, c.want)
+			}
+		})
+	}
+}
