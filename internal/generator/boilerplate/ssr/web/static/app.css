@@ -33,6 +33,18 @@ a:hover { text-decoration: underline; }
 .navbar-brand { font-weight: 600; font-size: 1.125rem; color: var(--fg); }
 .container { max-width: 64rem; margin: 0 auto; padding: 2rem 1.5rem; }
 
+/* Flash messages */
+.flash {
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+}
+.flash-success { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+.flash-error { background: #fef2f2; color: #991b1b; border-color: var(--danger-border); }
+.flash-info { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
+
 /* Headings */
 .page-header {
   display: flex;

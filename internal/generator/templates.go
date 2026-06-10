@@ -1352,6 +1352,7 @@ import (
 
 	"{{.ModulePath}}/internal/core/domain"
 	"{{.ModulePath}}/internal/core/ports"
+	"{{.ModulePath}}/internal/flash"
 	"{{.ModulePath}}/web/views"
 	"github.com/a-h/templ"
 	"github.com/go-chi/chi/v5"
@@ -1438,6 +1439,7 @@ func (h *{{.Name}}Handler) Create(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	flash.Set(w, flash.Success, "{{.Name}} created")
 	http.Redirect(w, r, h.prefix, http.StatusSeeOther)
 }
 
@@ -1458,6 +1460,7 @@ func (h *{{.Name}}Handler) Update(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	flash.Set(w, flash.Success, "{{.Name}} updated")
 	http.Redirect(w, r, h.prefix+"/"+id, http.StatusSeeOther)
 }
 
@@ -1471,6 +1474,7 @@ func (h *{{.Name}}Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	flash.Set(w, flash.Success, "{{.Name}} deleted")
 	http.Redirect(w, r, h.prefix, http.StatusSeeOther)
 }
 

@@ -12,6 +12,7 @@ import (
 
 	httpAdapter "{{.Module}}/internal/adapters/http"
 	"{{.Module}}/internal/adapters/store"
+	"{{.Module}}/internal/flash"
 	"{{.Module}}/web"
 	"{{.Module}}/web/views"
 	"github.com/go-chi/chi/v5"
@@ -152,6 +153,7 @@ func (a *App) mountMiddlewares(r *chi.Mux) {
 	r.Use(httpAdapter.CORS(a.cfg.AllowedOrigins))
 	r.Use(httpAdapter.StructuredLogger(a.logger))
 	r.Use(httpAdapter.StructuredRecoverer(a.logger))
+	r.Use(flash.Middleware)
 	r.Use(middleware.Timeout(60 * time.Second))
 }
 

@@ -1,5 +1,7 @@
 package views
 
+import "{{.Module}}/internal/flash"
+
 templ Layout(title string) {
 	<!DOCTYPE html>
 	<html lang="en">
@@ -21,6 +23,9 @@ templ Layout(title string) {
 				<a href="/" class="navbar-brand">App</a>
 			</nav>
 			<main class="container">
+				if msg := flash.From(ctx); msg != nil {
+					<div class={ "flash", "flash-" + string(msg.Kind) } role="status">{ msg.Text }</div>
+				}
 				{ children... }
 			</main>
 		</body>
