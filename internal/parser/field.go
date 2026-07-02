@@ -78,6 +78,7 @@ var sqlReservedWords = map[string]bool{
 var typeMap = map[string][2]string{
 	"string":   {"string", "TEXT"},
 	"text":     {"string", "TEXT"},
+	"uuid":     {"string", "UUID"},
 	"int":      {"int", "INTEGER"},
 	"int64":    {"int64", "INTEGER"},
 	"float":    {"float64", "REAL"},

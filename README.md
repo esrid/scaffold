@@ -124,6 +124,7 @@ name:[]type!           prefix-bracket arrays
 |-------|---------|--------|----------|
 | `string`, `text` | `string` | `TEXT` | `TEXT` |
 | `string{n}` | `string` | `VARCHAR(n)` | `VARCHAR(n)` |
+| `uuid` | `string` | `TEXT` | `UUID` |
 | `int` | `int` | `INTEGER` | `INTEGER` |
 | `int64` | `int64` | `INTEGER` | `BIGINT` |
 | `float`, `float64` | `float64` | `REAL` | `DOUBLE PRECISION` |
