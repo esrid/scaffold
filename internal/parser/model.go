@@ -11,17 +11,20 @@ import (
 
 // Model is the fully resolved definition used by generators.
 type Model struct {
-	Name      string // "Product"
-	Fields    []Field
-	TableName string // "products"
-	IsNew     bool   // false if already in manifest (UPDATE mode)
-	NoHandler bool
-	Ops       Ops // which CRUD operations to generate (default: all)
-	SoftDelete            bool // true if soft deletion is enabled
-	PrevSoftDelete        bool // previous soft deletion state from manifest
-	SoftDeleteJustEnabled bool // true if soft deletion was just enabled on re-gen
+	Name                  string // "Product"
+	Fields                []Field
+	TableName             string // "products"
+	IsNew                 bool   // false if already in manifest (UPDATE mode)
+	NoHandler             bool
+	Ops                   Ops        // which CRUD operations to generate (default: all)
+	SoftDelete            bool       // true if soft deletion is enabled
+	PrevSoftDelete        bool       // previous soft deletion state from manifest
+	SoftDeleteJustEnabled bool       // true if soft deletion was just enabled on re-gen
 	UniqueTogether        [][]string // compound unique constraints, e.g. [][]string{{"name", "category"}}
 	PrevUniqueTogether    [][]string // previous compound unique constraints from manifest
+	// Middleware maps an op name to the ordered middleware function names
+	// wrapping that op's route — see --middleware / --remove-middleware.
+	Middleware map[string][]string
 
 	// Previous fields from manifest — used to diff for migrations.
 	PrevFields []Field
@@ -221,6 +224,7 @@ func ModelFromEntry(name string, entry ManifestModel, manifest *Manifest) (*Mode
 		ScaffoldedAt:     entry.ScaffoldedAt,
 		SoftDelete:       entry.SoftDelete,
 		UniqueTogether:   entry.UniqueTogether,
+		Middleware:       entry.Middleware,
 	}, nil
 }
 
@@ -251,6 +255,7 @@ func (m *Model) ManifestEntry() ManifestModel {
 		SkippedOps:       m.Ops.Skipped(),
 		SoftDelete:       m.SoftDelete,
 		UniqueTogether:   m.UniqueTogether,
+		Middleware:       m.Middleware,
 	}
 }
 

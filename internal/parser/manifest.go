@@ -53,6 +53,11 @@ type ManifestModel struct {
 	SkippedOps       []string        `json:"skippedOps,omitempty"`
 	SoftDelete       bool            `json:"softDelete,omitempty"`
 	UniqueTogether   [][]string      `json:"uniqueTogether,omitempty"`
+	// Middleware maps an op name (list/read/create/update/delete) to the
+	// ordered list of middleware function names to wrap that op's route
+	// with. Sticky across regeneration like fields — see --middleware /
+	// --remove-middleware in `scaffold gen --help`.
+	Middleware map[string][]string `json:"middleware,omitempty"`
 }
 
 // ManifestField is a serializable snapshot of a Field.

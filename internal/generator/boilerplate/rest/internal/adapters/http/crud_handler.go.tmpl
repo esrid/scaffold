@@ -28,15 +28,34 @@ type CRUDOps struct {
 	Delete bool
 }
 
+// CRUDMiddleware holds, per op, the middleware chain to wrap that op's
+// route with — populated from --middleware at generation time. A nil slice
+// means no wrapping, identical to before --middleware existed.
+type CRUDMiddleware struct {
+	List, Read, Create, Update, Delete []func(http.Handler) http.Handler
+}
+
+// chain wraps h with mw innermost-first, so mw[0] is outermost (runs
+// first) — matches "op:Func1,Func2" reading left to right as execution
+// order.
+func chain(mw []func(http.Handler) http.Handler, h http.HandlerFunc) http.Handler {
+	var wrapped http.Handler = h
+	for i := len(mw) - 1; i >= 0; i-- {
+		wrapped = mw[i](wrapped)
+	}
+	return wrapped
+}
+
 type CRUDHandler[T domain.Identifiable[T]] struct {
 	service ports.CRUDService[T]
 	logger  *slog.Logger
 	entity  string
 	prefix  string
 	ops     CRUDOps
+	mw      CRUDMiddleware
 }
 
-func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], entity string, prefix string, ops CRUDOps, logger *slog.Logger) *CRUDHandler[T] {
+func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], entity string, prefix string, ops CRUDOps, mw CRUDMiddleware, logger *slog.Logger) *CRUDHandler[T] {
 	if prefix == "" {
 		lower := strings.ToLower(entity)
 		if strings.HasSuffix(lower, "y") {
@@ -50,6 +69,7 @@ func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], enti
 		entity:  entity,
 		prefix:  prefix,
 		ops:     ops,
+		mw:      mw,
 		logger:  logger,
 	}
 }
@@ -61,19 +81,19 @@ func (h *CRUDHandler[T]) Prefix() string { return h.prefix }
 // means "{prefix}/{id}" to the outside world.
 func (h *CRUDHandler[T]) RegisterRoutes(mux *http.ServeMux) {
 	if h.ops.Read {
-		mux.HandleFunc("GET /{id}", h.Get)
+		mux.Handle("GET /{id}", chain(h.mw.Read, h.Get))
 	}
 	if h.ops.List {
-		mux.HandleFunc("GET /{$}", h.List)
+		mux.Handle("GET /{$}", chain(h.mw.List, h.List))
 	}
 	if h.ops.Create {
-		mux.HandleFunc("POST /{$}", h.Create)
+		mux.Handle("POST /{$}", chain(h.mw.Create, h.Create))
 	}
 	if h.ops.Update {
-		mux.HandleFunc("PUT /{id}", h.Update)
+		mux.Handle("PUT /{id}", chain(h.mw.Update, h.Update))
 	}
 	if h.ops.Delete {
-		mux.HandleFunc("DELETE /{id}", h.Delete)
+		mux.Handle("DELETE /{id}", chain(h.mw.Delete, h.Delete))
 	}
 }
 

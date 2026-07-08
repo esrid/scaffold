@@ -69,6 +69,10 @@ type registryModel struct {
 	Lower     string
 	NoHandler bool
 	Ops       parser.Ops
+	// MiddlewareLiteral is the fully-formed httpadapter.CRUDMiddleware{...}
+	// Go expression for this model's --middleware config (REST mode only;
+	// SSR wraps middleware inline in the per-model handler file instead).
+	MiddlewareLiteral string
 }
 
 // registryCtx is the data passed to registryTmpl.
@@ -94,6 +98,17 @@ type ssrHandlerCtx struct {
 	NeedsTime    bool       // true when any field is time.Time/*time.Time (bindForm parses it)
 	NeedsJSON    bool       // true when any field is json.RawMessage (bindForm validates it)
 	Ops          parser.Ops // which CRUD operations to generate
+	// MW holds the fully-formed handler expression for each method — plain
+	// "http.HandlerFunc(h.X)" when unconfigured, or nested middleware calls
+	// wrapping it when --middleware was used for that op.
+	MW ssrHandlerMiddleware
+}
+
+// ssrHandlerMiddleware is one ready-to-emit expression per handler method.
+// New/Create share the "create" op's middleware (a gated create resource
+// should hide its form too); Edit/Update share "update" the same way.
+type ssrHandlerMiddleware struct {
+	List, New, Create, Show, Edit, Update, Delete string
 }
 
 // protoCtx is the data passed to protoTmpl.

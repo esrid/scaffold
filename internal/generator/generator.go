@@ -923,6 +923,18 @@ func (g *Generator) writeGRPCShared(rel string, res *Result) error {
 
 // ---- SSR ----
 
+// wrapHandlerExpr turns a handler method reference into a ready-to-emit Go
+// expression, nesting any configured middleware around it innermost-first
+// (the last name in names runs closest to the handler). No names -> the
+// bare http.HandlerFunc, identical to before --middleware existed.
+func wrapHandlerExpr(names []string, handlerRef string) string {
+	expr := "http.HandlerFunc(" + handlerRef + ")"
+	for i := len(names) - 1; i >= 0; i-- {
+		expr = names[i] + "(" + expr + ")"
+	}
+	return expr
+}
+
 func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result) error {
 	fields := buildTemplateFields(model.Fields, g.manifest.DB)
 	needsStrconv, needsTime, needsJSON := false, false, false
@@ -940,6 +952,7 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 			needsJSON = true
 		}
 	}
+	mw := model.Middleware
 	ctx := ssrHandlerCtx{
 		ModulePath:   g.modulePath,
 		Name:         model.Name,
@@ -950,6 +963,15 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 		NeedsTime:    needsTime,
 		NeedsJSON:    needsJSON,
 		Ops:          model.Ops,
+		MW: ssrHandlerMiddleware{
+			List:   wrapHandlerExpr(mw["list"], "h.List"),
+			New:    wrapHandlerExpr(mw["create"], "h.New"),
+			Create: wrapHandlerExpr(mw["create"], "h.Create"),
+			Show:   wrapHandlerExpr(mw["read"], "h.Show"),
+			Edit:   wrapHandlerExpr(mw["update"], "h.Edit"),
+			Update: wrapHandlerExpr(mw["update"], "h.Update"),
+			Delete: wrapHandlerExpr(mw["delete"], "h.Delete"),
+		},
 	}
 	src, err := renderTemplate(ssrHandlerTmpl, ctx)
 	if err != nil {
@@ -1041,6 +1063,28 @@ func renderTemplateHTML(tmplStr string, data any) (string, error) {
 	return buf.String(), nil
 }
 
+// buildCRUDMiddlewareLiteral renders a model's --middleware config (REST
+// mode) as a ready-to-emit httpadapter.CRUDMiddleware{...} Go expression,
+// qualifying each name as httpadapter.<Name> since registry.go lives in
+// package app. Op order is fixed (not map iteration) so re-running gen
+// without changes stays byte-identical.
+func buildCRUDMiddlewareLiteral(mw map[string][]string) string {
+	fieldNames := map[string]string{"list": "List", "read": "Read", "create": "Create", "update": "Update", "delete": "Delete"}
+	var parts []string
+	for _, op := range []string{"list", "read", "create", "update", "delete"} {
+		names := mw[op]
+		if len(names) == 0 {
+			continue
+		}
+		qualified := make([]string, len(names))
+		for i, n := range names {
+			qualified[i] = "httpadapter." + n
+		}
+		parts = append(parts, fmt.Sprintf("%s: []func(http.Handler) http.Handler{%s}", fieldNames[op], strings.Join(qualified, ", ")))
+	}
+	return "httpadapter.CRUDMiddleware{" + strings.Join(parts, ", ") + "}"
+}
+
 // ---- Registry ----
 
 func (g *Generator) writeRegistry(res *Result) error {
@@ -1051,10 +1095,11 @@ func (g *Generator) writeRegistry(res *Result) error {
 			hasHandlers = true
 		}
 		models = append(models, registryModel{
-			Name:      name,
-			Lower:     strings.ToLower(name),
-			NoHandler: entry.NoHandler,
-			Ops:       parser.OpsFromSkipped(entry.SkippedOps),
+			Name:              name,
+			Lower:             strings.ToLower(name),
+			NoHandler:         entry.NoHandler,
+			Ops:               parser.OpsFromSkipped(entry.SkippedOps),
+			MiddlewareLiteral: buildCRUDMiddlewareLiteral(entry.Middleware),
 		})
 	}
 	// Map iteration order is random — sort so registry.go is deterministic

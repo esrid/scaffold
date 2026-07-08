@@ -486,6 +486,7 @@ import (
 {{- if .Models}}
 
 	{{- if .HasHandlers}}
+	"net/http"
 	httpadapter "{{.ModulePath}}/internal/adapters/http"
 	{{- end}}
 	{{- if and .GRPC .HasHandlers}}
@@ -566,7 +567,7 @@ func NewRegistry(db *sql.DB, logger *slog.Logger) *Registry {
 	handlers := &Handlers{
 {{- range .Models}}
 {{- if not .NoHandler}}
-		{{.Name}}: httpadapter.NewCRUDHandler(svcs.{{.Name}}, "{{.Name}}", "", httpadapter.CRUDOps{List: {{.Ops.List}}, Read: {{.Ops.Read}}, Create: {{.Ops.Create}}, Update: {{.Ops.Update}}, Delete: {{.Ops.Delete}}}, logger),
+		{{.Name}}: httpadapter.NewCRUDHandler(svcs.{{.Name}}, "{{.Name}}", "", httpadapter.CRUDOps{List: {{.Ops.List}}, Read: {{.Ops.Read}}, Create: {{.Ops.Create}}, Update: {{.Ops.Update}}, Delete: {{.Ops.Delete}}}, {{.MiddlewareLiteral}}, logger),
 {{- end}}
 {{- end}}
 	}
@@ -701,6 +702,7 @@ import (
 {{- if .Models}}
 
 	{{- if .HasHandlers}}
+	"net/http"
 	httpadapter "{{.ModulePath}}/internal/adapters/http"
 	{{- end}}
 	{{- if and .GRPC .HasHandlers}}
@@ -781,7 +783,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) *Registry {
 	handlers := &Handlers{
 {{- range .Models}}
 {{- if not .NoHandler}}
-		{{.Name}}: httpadapter.NewCRUDHandler(svcs.{{.Name}}, "{{.Name}}", "", httpadapter.CRUDOps{List: {{.Ops.List}}, Read: {{.Ops.Read}}, Create: {{.Ops.Create}}, Update: {{.Ops.Update}}, Delete: {{.Ops.Delete}}}, logger),
+		{{.Name}}: httpadapter.NewCRUDHandler(svcs.{{.Name}}, "{{.Name}}", "", httpadapter.CRUDOps{List: {{.Ops.List}}, Read: {{.Ops.Read}}, Create: {{.Ops.Create}}, Update: {{.Ops.Update}}, Delete: {{.Ops.Delete}}}, {{.MiddlewareLiteral}}, logger),
 {{- end}}
 {{- end}}
 	}
@@ -1397,21 +1399,21 @@ func (h *{{.Name}}Handler) Router() *http.ServeMux {
 
 func (h *{{.Name}}Handler) RegisterRoutes(mux *http.ServeMux) {
 	{{- if .Ops.List}}
-	mux.HandleFunc("GET /{$}", h.List)
+	mux.Handle("GET /{$}", {{.MW.List}})
 	{{- end}}
 	{{- if .Ops.Create}}
-	mux.HandleFunc("GET /new", h.New)
-	mux.HandleFunc("POST /{$}", h.Create)
+	mux.Handle("GET /new", {{.MW.New}})
+	mux.Handle("POST /{$}", {{.MW.Create}})
 	{{- end}}
 	{{- if .Ops.Read}}
-	mux.HandleFunc("GET /{id}", h.Show)
+	mux.Handle("GET /{id}", {{.MW.Show}})
 	{{- end}}
 	{{- if .Ops.Update}}
-	mux.HandleFunc("GET /{id}/edit", h.Edit)
-	mux.HandleFunc("POST /{id}", h.Update)
+	mux.Handle("GET /{id}/edit", {{.MW.Edit}})
+	mux.Handle("POST /{id}", {{.MW.Update}})
 	{{- end}}
 	{{- if .Ops.Delete}}
-	mux.HandleFunc("DELETE /{id}", h.Delete)
+	mux.Handle("DELETE /{id}", {{.MW.Delete}})
 	{{- end}}
 	// registerCustomRoutes is always called (same fixed line every
 	// regeneration) — its body lives in {{.Lower}}_handler.go, which

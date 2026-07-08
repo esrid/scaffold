@@ -11,16 +11,18 @@ import (
 )
 
 var (
-	dryRun         bool
-	tableName      string
-	removeFields   []string
-	noHandler      bool
-	skipOps        []string
-	onlyOps        []string
-	regenViews     bool
-	diffMode       bool
-	softDelete     bool
-	uniqueTogether []string
+	dryRun           bool
+	tableName        string
+	removeFields     []string
+	noHandler        bool
+	skipOps          []string
+	onlyOps          []string
+	regenViews       bool
+	diffMode         bool
+	softDelete       bool
+	uniqueTogether   []string
+	middlewareSpecs  []string
+	removeMiddleware []string
 )
 
 var genCmd = &cobra.Command{
@@ -166,6 +168,8 @@ func init() {
 	genCmd.Flags().BoolVar(&diffMode, "diff", false, "Show a unified diff of what would change, without writing any files")
 	genCmd.Flags().BoolVar(&softDelete, "soft-delete", false, "Enable soft deletion (stores deletion timestamp in deleted_at field)")
 	genCmd.Flags().StringArrayVar(&uniqueTogether, "unique-together", nil, "Define compound unique constraint(s) (comma-separated fields, e.g. 'name,category')")
+	genCmd.Flags().StringArrayVar(&middlewareSpecs, "middleware", nil, "Wrap an op's route with middleware: op:Func1,Func2 (op: list,read,create,update,delete,all). Repeatable. Sticky across regeneration.")
+	genCmd.Flags().StringSliceVar(&removeMiddleware, "remove-middleware", nil, "Op name(s) to clear middleware from (comma-separated or repeated; 'all' clears everything)")
 	rootCmd.AddCommand(genCmd)
 }
 
@@ -219,6 +223,24 @@ func runGen(cmd *cobra.Command, args []string) error {
 		useUniqueTogether = existing.UniqueTogether
 	}
 
+	useMiddleware := map[string][]string{}
+	if existing, exists := manifest.Models[modelName]; exists {
+		useMiddleware = existing.Middleware
+	}
+	if cmd.Flags().Changed("middleware") {
+		newMW, err := parser.ParseMiddlewareFlags(middlewareSpecs)
+		if err != nil {
+			return err
+		}
+		useMiddleware = parser.MergeMiddleware(useMiddleware, parser.ExpandAllMiddleware(newMW))
+	}
+	if cmd.Flags().Changed("remove-middleware") {
+		useMiddleware, err = parser.RemoveMiddlewareOps(useMiddleware, removeMiddleware)
+		if err != nil {
+			return err
+		}
+	}
+
 	model, err := parser.BuildModel(modelName, fields, removeFields, manifest, tableName, noHandler)
 	if err != nil {
 		return err
@@ -226,6 +248,7 @@ func runGen(cmd *cobra.Command, args []string) error {
 
 	model.SoftDelete = useSoftDelete
 	model.UniqueTogether = useUniqueTogether
+	model.Middleware = useMiddleware
 	if existing, exists := manifest.Models[modelName]; exists {
 		model.PrevSoftDelete = existing.SoftDelete
 		model.SoftDeleteJustEnabled = model.SoftDelete && !model.PrevSoftDelete

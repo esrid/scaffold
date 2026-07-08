@@ -15,7 +15,7 @@ func TestScaffold_SkipsOps(t *testing.T) {
 	runScaffold(t, root, manifest, model)
 
 	handler := readFile(t, root, "internal/adapters/http/note_handler_gen.go")
-	assertContains(t, handler, "mux.HandleFunc(\"GET /{$}\", h.List)", "list route kept")
+	assertContains(t, handler, "mux.Handle(\"GET /{$}\", http.HandlerFunc(h.List))", "list route kept")
 	assertContains(t, handler, "h.Show)", "read route kept")
 	assertContains(t, handler, "h.Update)", "update route kept")
 	assertNotContains(t, handler, "h.Create)", "create route removed")
