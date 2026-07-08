@@ -164,17 +164,16 @@ func (p Product) Validate() error {
 
 **Custom queries** — in `internal/adapters/store/{model}_store.go`:
 
-For both Postgres (`pgx`) and SQLite (`database/sql` via adapted helpers), you can use struct-mapping helpers like `CollectRows` and `RowToStructByName` to map query results without writing manual scanner code:
-
 ```go
 func (s *ProductStore) FindBySlug(ctx context.Context, slug string) (*domain.Product, error) {
-	[[if eq .DB "sqlite"]]// Example using SQLite adapted helpers:
-	rows, err := s.db.QueryContext(ctx, "SELECT id, name, price, active, created_at, updated_at FROM products WHERE slug = ?", slug)
-	if err != nil {
+	[[if eq .DB "sqlite"]]// SQLite: plain positional Scan, same pattern as the generated Get/List.
+	row := s.db.QueryRowContext(ctx, "SELECT id, name, price, active, created_at, updated_at FROM products WHERE slug = ?", slug)
+	var p domain.Product
+	if err := row.Scan(&p.ID, &p.Name, &p.Price, &p.Active, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
-	return store.CollectOneRow(rows, store.RowToAddrOfStructByName[domain.Product])[[else]]// Example using pgx:
-	rows, err := s.db.Query(ctx, "SELECT id, name, price, active, created_at, updated_at FROM products WHERE slug = $1", slug)
+	return &p, nil[[else]]// Postgres: pgx's struct-mapping helpers.
+	rows, err := s.pool.Query(ctx, "SELECT id, name, price, active, created_at, updated_at FROM products WHERE slug = $1", slug)
 	if err != nil {
 		return nil, err
 	}

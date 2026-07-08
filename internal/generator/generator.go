@@ -1382,14 +1382,12 @@ func buildFieldLines(fields []templateField, db string, softDelete bool) string 
 }
 
 func buildMigrationCtx(model *parser.Model, added, removed []parser.Field, db string) migrationCtx {
-	var idDef string
-	switch db {
-	case "postgres":
-		idDef = "id UUID PRIMARY KEY DEFAULT uuidv7()"
-	case "sqlite":
-		idDef = "id TEXT PRIMARY KEY DEFAULT (uuid7())"
-	default:
-		idDef = "id TEXT PRIMARY KEY DEFAULT (uuid7())"
+	// id is generated in Go via uuid.NewV7() before every INSERT (see
+	// storeGenTmpl/storeGenTmplPostgres) — no DB-side DEFAULT or extension
+	// needed, so the column carries no default here.
+	idDef := "id TEXT PRIMARY KEY"
+	if db == "postgres" {
+		idDef = "id UUID PRIMARY KEY"
 	}
 
 	mapUniqueTogether := func(ut [][]string) []compoundUniqueIndex {

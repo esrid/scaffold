@@ -4,15 +4,6 @@
 FROM golang:1.26-bookworm AS builder
 WORKDIR /src
 
-# sqlean SQLite extension (sqlean.so) for Linux. Uses the latest release; pin for
-# reproducible builds by replacing "latest/download" with "download/<version>".
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl unzip \
- && curl -fsSL -o /tmp/sqlean.zip \
-      "https://github.com/nalgeon/sqlean/releases/latest/download/sqlean-linux-x86.zip" \
- && unzip -o /tmp/sqlean.zip -d /tmp/sqlean \
- && rm -rf /var/lib/apt/lists/*
-
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -21,7 +12,7 @@ COPY . .
 RUN go run github.com/a-h/templ/cmd/templ generate
 {{- end}}
 
-# go-sqlite3 requires CGO; sqlean is loaded at runtime via load_extension.
+# go-sqlite3 requires CGO.
 RUN CGO_ENABLED=1 go build -trimpath -o /out/server .
 
 # ---------- runtime ----------
@@ -32,8 +23,6 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/server /app/server
-# sqlean.so must sit in sqlite_ext/ next to the binary (see store.sqleanPath()).
-COPY --from=builder /tmp/sqlean/sqlean.so /app/sqlite_ext/sqlean.so
 
 ENV ADDR=:8080
 EXPOSE 8080

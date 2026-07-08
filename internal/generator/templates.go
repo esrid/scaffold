@@ -136,6 +136,7 @@ import (
 {{- if .NeedsJSON}}
 	"encoding/json"
 {{- end}}
+	"uuid"
 
 	"{{.ModulePath}}/internal/core/domain"
 	"{{.ModulePath}}/internal/core/ports"
@@ -151,7 +152,7 @@ const (
 	// id is a UUIDv7 (time-ordered), so ORDER BY id DESC returns newest first
 	// with a deterministic order — required for stable pagination.
 	sql{{.Name}}List   = ` + "`" + `SELECT {{.SelectCols}} FROM {{.TableName}} {{if .SoftDelete}}WHERE deleted_at IS NULL {{end}}ORDER BY id DESC LIMIT ? OFFSET ?` + "`" + `
-	sql{{.Name}}Create = ` + "`" + `INSERT INTO {{.TableName}} ({{.InsertCols}}) VALUES ({{.InsertPlaceholders}}) RETURNING id, created_at, updated_at` + "`" + `
+	sql{{.Name}}Create = ` + "`" + `INSERT INTO {{.TableName}} ({{.InsertCols}}) VALUES ({{.InsertPlaceholders}}) RETURNING created_at, updated_at` + "`" + `
 	sql{{.Name}}Update = ` + "`" + `UPDATE {{.TableName}} SET {{.UpdateSet}}, updated_at = CURRENT_TIMESTAMP WHERE id = ?{{if .SoftDelete}} AND deleted_at IS NULL{{end}} RETURNING created_at, updated_at` + "`" + `
 	sql{{.Name}}Delete = ` + "`" + `{{if .SoftDelete}}UPDATE {{.TableName}} SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL{{else}}DELETE FROM {{.TableName}} WHERE id = ?{{end}}` + "`" + `
 )
@@ -180,8 +181,9 @@ func (s *{{.Name}}Store) List(ctx context.Context, limit, offset int) ([]domain.
 
 func (s *{{.Name}}Store) Create(ctx context.Context, p domain.{{.Name}}) (domain.{{.Name}}, error) {
 	const op = "{{.Name}}Store.Create"
+	p.ID = uuid.NewV7().String()
 	row := s.db.QueryRowContext(ctx, sql{{.Name}}Create, {{.CreateArgs}})
-	if err := row.Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	if err := row.Scan(&p.CreatedAt, &p.UpdatedAt); err != nil {
 		if IsUniqueViolation(err) {
 			return domain.{{.Name}}{}, &domain.AlreadyExistsError{Entity: "{{.Name}}"}
 		}
@@ -599,6 +601,7 @@ package store
 import (
 	"context"
 	"errors"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"{{.ModulePath}}/internal/core/domain"
@@ -638,6 +641,7 @@ func (s *{{.Name}}Store) List(ctx context.Context, limit, offset int) ([]domain.
 
 func (s *{{.Name}}Store) Create(ctx context.Context, p domain.{{.Name}}) (domain.{{.Name}}, error) {
 	const op = "{{.Name}}Store.Create"
+	p.ID = uuid.NewV7().String()
 	rows, err := s.pool.Query(ctx, sql{{.Name}}Create, {{.CreateArgs}})
 	if err != nil {
 		return domain.{{.Name}}{}, DecorateError(err, op)
@@ -810,7 +814,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) *Registry {
 // schemaTmplPostgres generates the SQL block inserted into schema.sql for Postgres
 const schemaTmplPostgres = `-- scaffold:table:{{.Name}}:start
 CREATE TABLE IF NOT EXISTS {{.TableName}} (
-    id UUID PRIMARY KEY DEFAULT uuidv7(),
+    id UUID PRIMARY KEY,
 {{- range .Fields}}
     {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}},
 {{- end}}
@@ -838,7 +842,7 @@ CREATE TRIGGER trg_{{.TableName}}_updated_at
 // migrationCreateTmplPostgres generates the initial CREATE TABLE migration for Postgres (goose format)
 const migrationCreateTmplPostgres = `-- +goose Up
 CREATE TABLE IF NOT EXISTS {{.TableName}} (
-    id UUID PRIMARY KEY DEFAULT uuidv7(),
+    id UUID PRIMARY KEY,
 {{- range .Fields}}
     {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}},
 {{- end}}
@@ -879,7 +883,7 @@ DROP TABLE IF EXISTS {{.TableName}};
 
 -- +goose Down
 CREATE TABLE IF NOT EXISTS {{.TableName}} (
-    id UUID PRIMARY KEY DEFAULT uuidv7(),
+    id UUID PRIMARY KEY,
 {{- range .Fields}}
     {{.Name}} {{.SQLType}}{{if .NotNull}} NOT NULL{{end}}{{.SQLModifiers}},
 {{- end}}

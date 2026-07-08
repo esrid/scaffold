@@ -4,10 +4,9 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"os"
-	"path/filepath"
 
-	"github.com/mattn/go-sqlite3"
+	// mattn/go-sqlite3's init() registers the "sqlite3" driver used by
+	// sql.Open below; store_helper.go imports it non-blank for sqlite3.Error.
 	"github.com/pressly/goose/v3"
 )
 
@@ -18,40 +17,12 @@ type Store struct {
 	db *sql.DB
 }
 
-func init() {
-	sql.Register("sqlite_ext", &sqlite3.SQLiteDriver{
-		Extensions: []string{sqleanPath()},
-	})
-}
-
-// sqleanPath returns the path to the sqlean extension WITHOUT a file suffix —
-// SQLite appends the platform default (.so on Linux, .dylib on macOS). Resolution
-// order, so it works both in dev and in production (Docker):
-//  1. SQLITE_EXT_PATH env var (full path, no suffix);
-//  2. a sqlite_ext/ directory next to the running binary (prod deploy);
-//  3. the repo-relative path (dev, run from the project root).
-func sqleanPath() string {
-	if p := os.Getenv("SQLITE_EXT_PATH"); p != "" {
-		return p
-	}
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Join(filepath.Dir(exe), "sqlite_ext")
-		if _, err := os.Stat(dir); err == nil {
-			return filepath.Join(dir, "sqlean")
-		}
-	}
-	if abs, err := filepath.Abs("internal/adapters/store/sqlite_ext/sqlean"); err == nil {
-		return abs
-	}
-	return "internal/adapters/store/sqlite_ext/sqlean"
-}
-
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
 func Open(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite_ext", dsn)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
