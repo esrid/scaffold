@@ -1052,6 +1052,7 @@ func (g *Generator) writeRegistry(res *Result) error {
 		}
 		models = append(models, registryModel{
 			Name:      name,
+			Lower:     strings.ToLower(name),
 			NoHandler: entry.NoHandler,
 			Ops:       parser.OpsFromSkipped(entry.SkippedOps),
 		})
@@ -1085,11 +1086,12 @@ func (g *Generator) writeRegistry(res *Result) error {
 
 // writeRoutes regenerates internal/app/routes_gen.go with the model HTTP (and
 // gRPC) registrations. app.go is hand-written and simply calls the generated
-// a.registerGeneratedRoutes(r) — no markers.
+// a.registerGeneratedRoutes(mux) — no markers (yet; see the wiring-markers
+// plan for making this per-model additive instead of whole-file overwrite).
 func (g *Generator) writeRoutes(res *Result) error {
 	models := make([]registryModel, 0, len(g.manifest.Models))
 	for name, entry := range g.manifest.Models {
-		models = append(models, registryModel{Name: name, NoHandler: entry.NoHandler})
+		models = append(models, registryModel{Name: name, Lower: strings.ToLower(name), NoHandler: entry.NoHandler})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 

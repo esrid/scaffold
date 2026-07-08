@@ -15,8 +15,6 @@ import (
 	"{{.Module}}/internal/flash"
 	"{{.Module}}/web"
 	"{{.Module}}/web/views"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	{{- if eq .DB "postgres"}}
 	"github.com/jackc/pgx/v5/pgxpool"
 	{{- else}}
@@ -140,34 +138,40 @@ func (a *App) Run(ctx context.Context) error {
 	return runErr
 }
 
-func (a *App) buildRouter() *chi.Mux {
-	r := chi.NewRouter()
-	a.mountMiddlewares(r)
-	a.mountRoutes(r)
-	return r
+func (a *App) buildRouter() http.Handler {
+	mux := http.NewServeMux()
+	a.mountRoutes(mux)
+	return a.wrapMiddlewares(mux)
 }
 
-func (a *App) mountMiddlewares(r *chi.Mux) {
-	r.Use(middleware.RequestID)
-	r.Use(middleware.CleanPath)
-	r.Use(httpAdapter.CORS(a.cfg.AllowedOrigins))
-	r.Use(httpAdapter.StructuredLogger(a.logger))
-	r.Use(httpAdapter.StructuredRecoverer(a.logger))
-	r.Use(flash.Middleware)
-	r.Use(middleware.Timeout(60 * time.Second))
+// wrapMiddlewares composes the global middleware chain. stdlib's ServeMux
+// has no r.Use() — middleware is plain function composition around the
+// whole mux instead. Order matches the original chi r.Use() sequence
+// exactly (each wrap here is the reverse-order equivalent of a chi Use
+// call, since the LAST wrap applied here is the OUTERMOST/first-to-run
+// layer, same as the FIRST Use() call was in chi).
+func (a *App) wrapMiddlewares(h http.Handler) http.Handler {
+	h = http.TimeoutHandler(h, 60*time.Second, "request timed out")
+	h = flash.Middleware(h)
+	h = httpAdapter.StructuredRecoverer(a.logger)(h)
+	h = httpAdapter.StructuredLogger(a.logger)(h)
+	h = httpAdapter.CORS(a.cfg.AllowedOrigins)(h)
+	h = httpAdapter.CleanPath(h)
+	h = httpAdapter.RequestID(h)
+	return h
 }
 
-func (a *App) mountRoutes(r *chi.Mux) {
-	r.Get("/health", a.healthHandler)
-	r.Handle("/static/*", http.FileServerFS(web.StaticFS))
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+func (a *App) mountRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /health", a.healthHandler)
+	mux.Handle("GET /static/", http.FileServerFS(web.StaticFS))
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := views.Home().Render(r.Context(), w); err != nil {
 			a.logger.Error("render home", "err", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 	})
-	a.registerGeneratedRoutes(r)
+	a.registerGeneratedRoutes(mux)
 }
 
 func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {

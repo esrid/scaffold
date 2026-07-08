@@ -66,6 +66,7 @@ type serviceGenCtx struct {
 // registryModel is one model entry in the registry template.
 type registryModel struct {
 	Name      string
+	Lower     string
 	NoHandler bool
 	Ops       parser.Ops
 }

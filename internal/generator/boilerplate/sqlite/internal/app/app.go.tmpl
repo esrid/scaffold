@@ -16,8 +16,6 @@ import (
 	httpAdapter "{{.Module}}/internal/adapters/http"
 	"{{.Module}}/internal/adapters/store"
 	"{{.Module}}/web"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	{{- if .GRPC}}
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -122,29 +120,35 @@ func (a *App) Run(ctx context.Context) error {
 	return runErr
 }
 
-func (a *App) buildRouter() *chi.Mux {
-	r := chi.NewRouter()
-	a.mountMiddlewares(r)
-	a.mountRoutes(r)
-	return r
+func (a *App) buildRouter() http.Handler {
+	mux := http.NewServeMux()
+	a.mountRoutes(mux)
+	return a.wrapMiddlewares(mux)
 }
 
-func (a *App) mountMiddlewares(r *chi.Mux) {
-	r.Use(middleware.RequestID)
-	r.Use(middleware.CleanPath)
-	r.Use(httpAdapter.CORS(a.cfg.AllowedOrigins))
-	r.Use(httpAdapter.StructuredLogger(a.logger))
-	r.Use(httpAdapter.StructuredRecoverer(a.logger))
-	r.Use(middleware.Timeout(60 * time.Second))
+// wrapMiddlewares composes the global middleware chain. stdlib's ServeMux
+// has no r.Use() — middleware is plain function composition around the
+// whole mux instead. Order matches the original chi r.Use() sequence
+// exactly (each wrap here is the reverse-order equivalent of a chi Use
+// call, since the LAST wrap applied here is the OUTERMOST/first-to-run
+// layer, same as the FIRST Use() call was in chi).
+func (a *App) wrapMiddlewares(h http.Handler) http.Handler {
+	h = http.TimeoutHandler(h, 60*time.Second, "request timed out")
+	h = httpAdapter.StructuredRecoverer(a.logger)(h)
+	h = httpAdapter.StructuredLogger(a.logger)(h)
+	h = httpAdapter.CORS(a.cfg.AllowedOrigins)(h)
+	h = httpAdapter.CleanPath(h)
+	h = httpAdapter.RequestID(h)
+	return h
 }
 
-func (a *App) mountRoutes(r *chi.Mux) {
-	r.Get("/health", a.healthHandler)
-	r.Get("/", a.serveFile("index.html", "text/html; charset=utf-8", web.IndexHTML))
-	r.Get("/robots.txt", a.serveFile("robots.txt", "text/plain; charset=utf-8", web.RobotsTXT))
-	r.Get("/sitemap.xml", a.serveFile("sitemap.xml", "application/xml", web.SitemapXML))
-	serveStatic(r, "/static", a.fileSystem)
-	a.registerGeneratedRoutes(r)
+func (a *App) mountRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /health", a.healthHandler)
+	mux.HandleFunc("GET /{$}", a.serveFile("index.html", "text/html; charset=utf-8", web.IndexHTML))
+	mux.HandleFunc("GET /robots.txt", a.serveFile("robots.txt", "text/plain; charset=utf-8", web.RobotsTXT))
+	mux.HandleFunc("GET /sitemap.xml", a.serveFile("sitemap.xml", "application/xml", web.SitemapXML))
+	serveStatic(mux, "/static", a.fileSystem)
+	a.registerGeneratedRoutes(mux)
 }
 
 func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {

@@ -1,18 +1,78 @@
 package http
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/go-chi/chi/v5/middleware"
 )
+
+type requestIDKeyType struct{}
+
+var requestIDKey requestIDKeyType
+
+// RequestID has no stdlib equivalent — chi's middleware.RequestID did this.
+// Attaches a short random ID to the request context and an X-Request-Id
+// response header, for correlating a request across log lines.
+func RequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := make([]byte, 8)
+		_, _ = rand.Read(b)
+		id := hex.EncodeToString(b)
+		w.Header().Set("X-Request-Id", id)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey, id)))
+	})
+}
+
+// GetReqID mirrors chi's middleware.GetReqID — returns "" if RequestID
+// wasn't run for this request.
+func GetReqID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey).(string)
+	return id
+}
+
+// CleanPath has no stdlib equivalent — chi's middleware.CleanPath did
+// this. Collapses duplicate slashes before the mux ever sees the request.
+func CleanPath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "//") {
+			for strings.Contains(r.URL.Path, "//") {
+				r.URL.Path = strings.ReplaceAll(r.URL.Path, "//", "/")
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// statusWriter captures the response status and byte count for
+// StructuredLogger — chi's middleware.NewWrapResponseWriter did this.
+type statusWriter struct {
+	http.ResponseWriter
+	status  int
+	written int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.written += n
+	return n, err
+}
 
 func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
-			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 			t1 := time.Now()
 
 			defer func() {
@@ -21,7 +81,7 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 					scheme = "https"
 				}
 
-				status := ww.Status()
+				status := sw.status
 				level := slog.LevelInfo
 				switch {
 				case status >= 500:
@@ -37,14 +97,14 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 						slog.String("scheme", scheme),
 						slog.Int("status", status),
 						slog.Duration("duration", time.Since(t1)),
-						slog.Int("bytes", ww.BytesWritten()),
+						slog.Int("bytes", sw.written),
 						slog.String("remote_ip", r.RemoteAddr),
-						slog.String("request_id", middleware.GetReqID(r.Context())),
+						slog.String("request_id", GetReqID(r.Context())),
 					)
 				}
 			}()
 
-			next.ServeHTTP(ww, r)
+			next.ServeHTTP(sw, r)
 		}
 		return http.HandlerFunc(fn)
 	}
@@ -62,7 +122,7 @@ func StructuredRecoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 						slog.Any("panic", rvr),
 						slog.String("method", r.Method),
 						slog.String("path", r.URL.Path),
-						slog.String("request_id", middleware.GetReqID(r.Context())),
+						slog.String("request_id", GetReqID(r.Context())),
 					)
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)

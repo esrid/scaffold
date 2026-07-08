@@ -11,7 +11,6 @@ import (
 
 	"{{.Module}}/internal/core/domain"
 	"{{.Module}}/internal/core/ports"
-	"github.com/go-chi/chi/v5"
 )
 
 const (
@@ -57,26 +56,29 @@ func NewCRUDHandler[T domain.Identifiable[T]](service ports.CRUDService[T], enti
 
 func (h *CRUDHandler[T]) Prefix() string { return h.prefix }
 
-func (h *CRUDHandler[T]) RegisterRoutes(r chi.Router) {
+// RegisterRoutes registers prefix-relative patterns onto mux — the caller
+// mounts this behind http.StripPrefix(h.Prefix(), ...), so "/{id}" here
+// means "{prefix}/{id}" to the outside world.
+func (h *CRUDHandler[T]) RegisterRoutes(mux *http.ServeMux) {
 	if h.ops.Read {
-		r.Get("/{id}", h.Get)
+		mux.HandleFunc("GET /{id}", h.Get)
 	}
 	if h.ops.List {
-		r.Get("/", h.List)
+		mux.HandleFunc("GET /{$}", h.List)
 	}
 	if h.ops.Create {
-		r.Post("/", h.Create)
+		mux.HandleFunc("POST /{$}", h.Create)
 	}
 	if h.ops.Update {
-		r.Put("/{id}", h.Update)
+		mux.HandleFunc("PUT /{id}", h.Update)
 	}
 	if h.ops.Delete {
-		r.Delete("/{id}", h.Delete)
+		mux.HandleFunc("DELETE /{id}", h.Delete)
 	}
 }
 
 func (h *CRUDHandler[T]) Get(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id := r.PathValue("id")
 	p, err := h.service.Get(r.Context(), id)
 	if err != nil {
 		respondError(w, err)
@@ -125,7 +127,7 @@ func (h *CRUDHandler[T]) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *CRUDHandler[T]) Update(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id := r.PathValue("id")
 	var item T
 	if err := decodeJSON(w, r, &item); err != nil {
 		h.logger.Warn("failed to decode update payload", "err", err)
@@ -142,7 +144,7 @@ func (h *CRUDHandler[T]) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *CRUDHandler[T]) Delete(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id := r.PathValue("id")
 	if err := h.service.Delete(r.Context(), id); err != nil {
 		respondError(w, err)
 		return
