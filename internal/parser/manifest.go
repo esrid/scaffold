@@ -17,11 +17,15 @@ const migrationsDir = "internal/adapters/store/migrations"
 
 // Manifest is the source of truth for all scaffolded models.
 type Manifest struct {
-	Module  string                   `json:"module"`
-	DB      string                   `json:"db"`       // "sqlite" | "postgres", default "sqlite"
-	GRPC    bool                     `json:"grpc"`     // true if gRPC support is enabled (legacy flag)
-	APIMode string                   `json:"api_mode"` // "rest" | "ssr" | "grpc"
-	Models  map[string]ManifestModel `json:"models"`
+	Module  string `json:"module"`
+	DB      string `json:"db"`       // "sqlite" | "postgres", default "sqlite"
+	GRPC    bool   `json:"grpc"`     // true if gRPC support is enabled (legacy flag)
+	APIMode string `json:"api_mode"` // "rest" | "ssr" | "grpc"
+	// SSREngine selects the SSR view engine: "templ" (default, compiled
+	// components) or "html" (html/template + real HTMX, no compile step).
+	// Ignored outside SSR mode.
+	SSREngine string                   `json:"ssr_engine,omitempty"`
+	Models    map[string]ManifestModel `json:"models"`
 
 	// migrationFloor is the highest migration version found on disk at load time.
 	// Unexported → never serialized. It keeps newly numbered migrations ahead of
@@ -36,11 +40,15 @@ func (m *Manifest) IsPostgres() bool { return m.DB == "postgres" }
 // IsGRPC reports whether gRPC support is enabled for this project.
 func (m *Manifest) IsGRPC() bool { return m.APIMode == "grpc" || m.GRPC }
 
-// IsSSR reports whether the project uses SSR (html/template + HTMX) mode.
+// IsSSR reports whether the project uses SSR (server-rendered HTML) mode.
 func (m *Manifest) IsSSR() bool { return m.APIMode == "ssr" }
 
 // IsREST reports whether the project uses REST (JSON API) mode.
 func (m *Manifest) IsREST() bool { return m.APIMode == "rest" || (m.APIMode == "" && !m.GRPC) }
+
+// IsHTMLEngine reports whether SSR mode uses the html/template+HTMX engine
+// rather than the default templ engine. Meaningless outside SSR mode.
+func (m *Manifest) IsHTMLEngine() bool { return m.SSREngine == "html" }
 
 // ManifestModel stores the field snapshot and metadata for a model.
 type ManifestModel struct {

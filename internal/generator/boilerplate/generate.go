@@ -14,42 +14,59 @@ import (
 // The all: prefix is required so dotfiles (e.g. static/.env.example.tmpl) are
 // embedded — a bare //go:embed pattern silently skips names starting with "." or "_".
 //
-//go:embed all:static all:sqlite all:postgres all:grpc all:rest all:ssr
+//go:embed all:static all:sqlite all:postgres all:grpc all:rest all:ssr all:ssr-templ all:ssr-html
 var files embed.FS
 
 // BoilerplateData is passed to all .tmpl files during rendering.
 type BoilerplateData struct {
-	Module  string // e.g. "github.com/user/myapp"
-	DB      string // "sqlite" | "postgres"
-	AppName string // e.g. "myapp"
-	GRPC    bool   // true if gRPC support is enabled
-	APIMode string // "rest" | "ssr" | "grpc"
-	IsSSR   bool
-	IsREST  bool
-	IsGRPC  bool
+	Module    string // e.g. "github.com/user/myapp"
+	DB        string // "sqlite" | "postgres"
+	AppName   string // e.g. "myapp"
+	GRPC      bool   // true if gRPC support is enabled
+	APIMode   string // "rest" | "ssr" | "grpc"
+	SSREngine string // "templ" | "html" — SSR mode only
+	IsSSR     bool
+	IsREST    bool
+	IsGRPC    bool
+	IsHTML    bool // true when IsSSR && SSREngine == "html"
+	IsTempl   bool // true when IsSSR && SSREngine == "templ"
 }
 
-// Generate writes the full boilerplate for the chosen DB and API mode into dir.
-// Walk order: static/ → {db}/ → {api_mode}/ (→ grpc/ if gRPC)
-func Generate(dir, module, db, apiMode string) error {
+// Generate writes the full boilerplate for the chosen DB, API mode, and (SSR
+// only) view engine into dir.
+// Walk order: static/ → {db}/ → {api_mode}/ (→ grpc/ if gRPC) (→ ssr-templ/
+// or ssr-html/ if ssr)
+func Generate(dir, module, db, apiMode, ssrEngine string) error {
 	parts := strings.Split(module, "/")
 	appName := parts[len(parts)-1]
 
+	if ssrEngine == "" {
+		ssrEngine = "templ"
+	}
+
 	data := BoilerplateData{
-		Module:  module,
-		DB:      db,
-		AppName: appName,
-		GRPC:    apiMode == "grpc",
-		APIMode: apiMode,
-		IsSSR:   apiMode == "ssr",
-		IsREST:  apiMode == "rest",
-		IsGRPC:  apiMode == "grpc",
+		Module:    module,
+		DB:        db,
+		AppName:   appName,
+		GRPC:      apiMode == "grpc",
+		APIMode:   apiMode,
+		SSREngine: ssrEngine,
+		IsSSR:     apiMode == "ssr",
+		IsREST:    apiMode == "rest",
+		IsGRPC:    apiMode == "grpc",
+		IsHTML:    apiMode == "ssr" && ssrEngine == "html",
+		IsTempl:   apiMode == "ssr" && ssrEngine != "html",
 	}
 
 	sources := []string{"static", db}
 	switch apiMode {
 	case "ssr":
 		sources = append(sources, "ssr")
+		if ssrEngine == "html" {
+			sources = append(sources, "ssr-html")
+		} else {
+			sources = append(sources, "ssr-templ")
+		}
 	case "grpc":
 		sources = append(sources, "rest", "grpc")
 	default: // "rest"

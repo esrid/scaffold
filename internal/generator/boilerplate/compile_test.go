@@ -54,6 +54,7 @@ func initAndBuild(t *testing.T, db, apiMode string, models []modelDef) string {
 		module,
 		db,
 		apiMode,
+		"templ",
 	)
 	if errGen != nil {
 		t.Fatalf("boilerplate.Generate: %v", errGen)
@@ -128,7 +129,7 @@ func TestCompile_SSR_SkipOps(t *testing.T) {
 	dir := t.TempDir()
 	const module = "github.com/test/compilechk"
 
-	if err := boilerplate.Generate(dir, module, "sqlite", "ssr"); err != nil {
+	if err := boilerplate.Generate(dir, module, "sqlite", "ssr", "templ"); err != nil {
 		t.Fatalf("boilerplate.Generate: %v", err)
 	}
 	manifest, err := scaffoldparser.LoadManifest(dir)
@@ -181,7 +182,7 @@ func TestCompile_InitOnly_SSR(t *testing.T) {
 	requiresTempl(t)
 
 	dir := t.TempDir()
-	if err := boilerplate.Generate(dir, "github.com/test/initonly", "sqlite", "ssr"); err != nil {
+	if err := boilerplate.Generate(dir, "github.com/test/initonly", "sqlite", "ssr", "templ"); err != nil {
 		t.Fatalf("boilerplate.Generate: %v", err)
 	}
 	for _, c := range [][]string{{"templ", "generate"}, {"go", "mod", "tidy"}, {"go", "build", "./..."}} {

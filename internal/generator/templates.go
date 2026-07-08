@@ -1233,7 +1233,11 @@ const serviceWireLineTmpl = `// scaffold:service-wire:{{.Name}}:start
 
 // ssrHandlerWireLineTmpl renders ONE model's handler-wire span (SSR mode).
 const ssrHandlerWireLineTmpl = `// scaffold:handler-wire:{{.Name}}:start
+{{- if .IsHTMLEngine}}
+	{{.Name}}: httpAdapter.New{{.Name}}Handler(svcs.{{.Name}}, renderer, logger),
+{{- else}}
 	{{.Name}}: httpAdapter.New{{.Name}}Handler(svcs.{{.Name}}, logger),
+{{- end}}
 	// scaffold:handler-wire:{{.Name}}:end`
 
 // ssrHandlerTmpl generates internal/adapters/http/{model}_handler_gen.go for SSR mode.
@@ -1259,19 +1263,32 @@ import (
 	"{{.ModulePath}}/internal/core/domain"
 	"{{.ModulePath}}/internal/core/ports"
 	"{{.ModulePath}}/internal/flash"
+	{{- if .IsHTMLEngine}}
+	"{{.ModulePath}}/internal/render"
+	{{- else}}
 	"{{.ModulePath}}/web/views"
 	"github.com/a-h/templ"
+	{{- end}}
 )
 
 type {{.Name}}Handler struct {
 	service ports.{{.Name}}Service
+	{{- if .IsHTMLEngine}}
+	renderer *render.Renderer
+	{{- end}}
 	logger  *slog.Logger
 	prefix  string
 }
 
+{{- if .IsHTMLEngine}}
+func New{{.Name}}Handler(service ports.{{.Name}}Service, renderer *render.Renderer, logger *slog.Logger) *{{.Name}}Handler {
+	return &{{.Name}}Handler{service: service, renderer: renderer, logger: logger, prefix: "/{{.Plural}}"}
+}
+{{- else}}
 func New{{.Name}}Handler(service ports.{{.Name}}Service, logger *slog.Logger) *{{.Name}}Handler {
 	return &{{.Name}}Handler{service: service, logger: logger, prefix: "/{{.Plural}}"}
 }
+{{- end}}
 
 func (h *{{.Name}}Handler) Prefix() string { return h.prefix }
 
@@ -1306,17 +1323,44 @@ func (h *{{.Name}}Handler) RegisterRoutes(mux *http.ServeMux) {
 	h.registerCustomRoutes(mux)
 }
 
+{{- if .IsHTMLEngine}}
+type {{.Name}}ListData struct {
+	Flash *flash.Message
+	Items []domain.{{.Name}}
+}
+
+type {{.Name}}FormData struct {
+	Flash  *flash.Message
+	Item   *domain.{{.Name}}
+	IsNew  bool
+	Errors map[string]string
+}
+
+type {{.Name}}ShowData struct {
+	Flash *flash.Message
+	Item  domain.{{.Name}}
+}
+{{- end}}
+
 func (h *{{.Name}}Handler) List(w http.ResponseWriter, r *http.Request) {
 	items, err := h.service.List(r.Context(), 50, 0)
 	if err != nil {
 		h.serverError(w, err)
 		return
 	}
+	{{- if .IsHTMLEngine}}
+	h.renderPage(w, r, "templates/{{.Lower}}_list.html", {{.Name}}ListData{Flash: flash.From(r.Context()), Items: items})
+	{{- else}}
 	h.render(w, r, views.{{.Name}}List(items))
+	{{- end}}
 }
 
 func (h *{{.Name}}Handler) New(w http.ResponseWriter, r *http.Request) {
+	{{- if .IsHTMLEngine}}
+	h.renderPage(w, r, "templates/{{.Lower}}_form.html", {{.Name}}FormData{Flash: flash.From(r.Context()), IsNew: true})
+	{{- else}}
 	h.render(w, r, views.{{.Name}}Form(nil, true, nil))
+	{{- end}}
 }
 
 func (h *{{.Name}}Handler) Show(w http.ResponseWriter, r *http.Request) {
@@ -1326,7 +1370,11 @@ func (h *{{.Name}}Handler) Show(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	{{- if .IsHTMLEngine}}
+	h.renderPage(w, r, "templates/{{.Lower}}_show.html", {{.Name}}ShowData{Flash: flash.From(r.Context()), Item: *item})
+	{{- else}}
 	h.render(w, r, views.{{.Name}}Show(*item))
+	{{- end}}
 }
 
 func (h *{{.Name}}Handler) Edit(w http.ResponseWriter, r *http.Request) {
@@ -1336,7 +1384,11 @@ func (h *{{.Name}}Handler) Edit(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	{{- if .IsHTMLEngine}}
+	h.renderPage(w, r, "templates/{{.Lower}}_form.html", {{.Name}}FormData{Flash: flash.From(r.Context()), Item: item, IsNew: false})
+	{{- else}}
 	h.render(w, r, views.{{.Name}}Form(item, false, nil))
+	{{- end}}
 }
 
 func (h *{{.Name}}Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -1505,6 +1557,14 @@ func (h *{{.Name}}Handler) bindForm(r *http.Request, item domain.{{.Name}}) doma
 	return item
 }
 
+{{- if .IsHTMLEngine}}
+func (h *{{.Name}}Handler) renderPage(w http.ResponseWriter, r *http.Request, page string, data any) {
+	if err := h.renderer.Render(w, http.StatusOK, page, data); err != nil {
+		h.logger.Error("render", "err", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+{{- else}}
 func (h *{{.Name}}Handler) render(w http.ResponseWriter, r *http.Request, c templ.Component) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := c.Render(r.Context(), w); err != nil {
@@ -1512,6 +1572,7 @@ func (h *{{.Name}}Handler) render(w http.ResponseWriter, r *http.Request, c temp
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
+{{- end}}
 
 func (h *{{.Name}}Handler) serverError(w http.ResponseWriter, err error) {
 	var nfErr *domain.NotFoundError
@@ -1706,6 +1767,124 @@ templ [[.Name]]Show(item domain.[[.Name]]) {
 		</div>
 	}
 }
+`
+
+// ssrViewListHTMLTmpl generates web/templates/{lower}_list.html — the html
+// engine's equivalent of [[.Name]]List in ssrViewTmpl. Same fields, same
+// hx-delete/hx-target/hx-swap/hx-confirm HTMX behavior, real html/template
+// syntax instead of templ components. [[ ]] scaffold delimiters so the
+// output file's own {{ }} html/template syntax passes through untouched.
+const ssrViewListHTMLTmpl = `{{define "title"}}[[.Name]]s{{end}}
+{{define "content"}}
+<div class="page-header">
+	<h1>[[.Name]]s</h1>
+	[[- if .Ops.Create]]
+	<a href="/[[.Plural]]/new" class="btn btn-primary">New [[.Name]]</a>
+	[[- end]]
+</div>
+<div class="card">
+	<table>
+		<thead>
+			<tr>
+				[[- range .Fields]]
+				<th>[[.GoName]]</th>
+				[[- end]]
+				<th class="col-actions">Actions</th>
+			</tr>
+		</thead>
+		<tbody>
+			{{if not .Items}}
+			<tr><td colspan="[[len .Fields | add 1]]" class="empty">No [[.Name]]s yet.[[if .Ops.Create]] <a href="/[[.Plural]]/new">Create one →</a>[[end]]</td></tr>
+			{{else}}
+			{{range .Items}}
+			<tr id="row-{{.ID}}">
+				[[- range .Fields]]
+				<td>{{display .[[.GoName]]}}</td>
+				[[- end]]
+				<td class="col-actions">
+					[[- if .Ops.Read]]
+					<a href="/[[.Plural]]/{{.ID}}" class="link-muted">View</a>
+					[[- end]]
+					[[- if .Ops.Update]]
+					<a href="/[[.Plural]]/{{.ID}}/edit">Edit</a>
+					[[- end]]
+					[[- if .Ops.Delete]]
+					<button hx-delete="/[[.Plural]]/{{.ID}}" hx-target="#row-{{.ID}}" hx-swap="outerHTML" hx-confirm="Delete this [[.Name]]?" class="link-danger">Delete</button>
+					[[- end]]
+				</td>
+			</tr>
+			{{end}}
+			{{end}}
+		</tbody>
+	</table>
+</div>
+{{end}}
+`
+
+// ssrViewFormHTMLTmpl generates web/templates/{lower}_form.html — shared by
+// New and Edit (IsNew distinguishes them at runtime, same as templ's isNew
+// param).
+const ssrViewFormHTMLTmpl = `{{define "title"}}[[.Name]]{{end}}
+{{define "content"}}
+<div class="narrow">
+	<div class="toolbar" style="margin-bottom:1.5rem">
+		<a href="/[[.Plural]]" class="link-muted">← Back</a>
+		<h1>{{if .IsNew}}New [[.Name]]{{else}}Edit [[.Name]]{{end}}</h1>
+	</div>
+	<form method="POST" action="{{if .IsNew}}/[[.Plural]]{{else}}/[[.Plural]]/{{.Item.ID}}{{end}}" class="card card-body">
+		[[- range .Fields]]
+		<div class="form-group">
+			<label for="[[.Name]]">[[.GoName]]</label>
+			[[if or (eq .GoType "bool") (eq .GoType "*bool")]]
+			<input id="[[.Name]]" name="[[.Name]]" type="checkbox" {{if and .Item (truthy .Item.[[.GoName]])}}checked{{end}}>
+			[[else if eq .GoType "time.Time"]]
+			<input id="[[.Name]]" name="[[.Name]]" type="datetime-local" value="{{if .Item}}{{.Item.[[.GoName]].Format "2006-01-02T15:04"}}{{end}}">
+			[[else if eq .GoType "*time.Time"]]
+			<input id="[[.Name]]" name="[[.Name]]" type="datetime-local" value="{{if and .Item .Item.[[.GoName]]}}{{.Item.[[.GoName]].Format "2006-01-02T15:04"}}{{end}}">
+			[[else]]
+			<input id="[[.Name]]" name="[[.Name]]" type="text" value="{{if .Item}}{{display .Item.[[.GoName]]}}{{end}}">
+			[[end]]
+			{{with index .Errors "[[.Name]]"}}<p class="field-error">{{.}}</p>{{end}}
+		</div>
+		[[- end]]
+		<div class="form-actions">
+			<button type="submit" class="btn btn-primary">{{if .IsNew}}Create [[.Name]]{{else}}Save changes{{end}}</button>
+			<a href="/[[.Plural]]" class="btn btn-secondary">Cancel</a>
+		</div>
+	</form>
+</div>
+{{end}}
+`
+
+// ssrViewShowHTMLTmpl generates web/templates/{lower}_show.html.
+const ssrViewShowHTMLTmpl = `{{define "title"}}[[.Name]]{{end}}
+{{define "content"}}
+<div class="narrow">
+	<div class="page-header">
+		<div class="toolbar">
+			<a href="/[[.Plural]]" class="link-muted">← Back</a>
+			<h1>[[.Name]]</h1>
+		</div>
+		<div class="toolbar-actions">
+			[[- if .Ops.Update]]
+			<a href="/[[.Plural]]/{{.Item.ID}}/edit" class="btn btn-outline-primary">Edit</a>
+			[[- end]]
+			[[- if .Ops.Delete]]
+			<button hx-delete="/[[.Plural]]/{{.Item.ID}}" hx-push-url="/[[.Plural]]" hx-target="body" hx-confirm="Delete this [[.Name]]?" class="btn btn-outline-danger">Delete</button>
+			[[- end]]
+		</div>
+	</div>
+	<div class="card">
+		<dl>
+			<div class="detail-row"><dt>ID</dt><dd>{{.Item.ID}}</dd></div>
+			[[- range .Fields]]
+			<div class="detail-row"><dt>[[.GoName]]</dt><dd>{{display .Item.[[.GoName]]}}</dd></div>
+			[[- end]]
+			<div class="detail-row"><dt>Created</dt><dd>{{.Item.CreatedAt.Format "2006-01-02 15:04"}}</dd></div>
+		</dl>
+	</div>
+</div>
+{{end}}
 `
 
 // migrationAddSoftDeleteTmpl generates ALTER TABLE ADD COLUMN deleted_at.

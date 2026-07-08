@@ -1,0 +1,62 @@
+package web
+
+import (
+	"embed"
+	"fmt"
+	"html/template"
+	"reflect"
+	"strings"
+)
+
+// TemplatesFS holds the html/template page templates rendered by
+// internal/render.Renderer.
+//
+//go:embed templates
+var TemplatesFS embed.FS
+
+// TemplateFuncs are available in every page template.
+var TemplateFuncs = template.FuncMap{
+	"display": display,
+	"truthy":  truthy,
+	"add":     func(a, b int) int { return a + b },
+}
+
+// display renders a field value for templates, dereferencing pointers (nil
+// pointers render as the empty string). Byte slices (json.RawMessage) render
+// as text, other slices as comma-separated values, everything else with %v.
+func display(v any) string {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return ""
+	}
+	if rv.Kind() == reflect.Slice {
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return string(rv.Bytes())
+		}
+		parts := make([]string, rv.Len())
+		for i := range parts {
+			parts[i] = fmt.Sprintf("%v", rv.Index(i).Interface())
+		}
+		return strings.Join(parts, ", ")
+	}
+	return fmt.Sprintf("%v", rv.Interface())
+}
+
+// truthy reports whether v is a true bool (dereferencing pointers). Used to
+// decide whether a checkbox should be rendered as checked.
+func truthy(v any) bool {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	return rv.IsValid() && rv.Kind() == reflect.Bool && rv.Bool()
+}

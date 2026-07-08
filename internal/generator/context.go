@@ -73,6 +73,9 @@ type registryModel struct {
 	// Go expression for this model's --middleware config (REST mode only;
 	// SSR wraps middleware inline in the per-model handler file instead).
 	MiddlewareLiteral string
+	// IsHTMLEngine is true for SSR projects using the html/template+HTMX
+	// engine — see registryCtx.IsHTMLEngine.
+	IsHTMLEngine bool
 }
 
 // registryCtx is the data passed to registryTmpl.
@@ -90,6 +93,10 @@ type registryCtx struct {
 	// app.go's NewRegistry signature is static, seeded once at init, so
 	// spliced wiring content must reference whichever name it already used.
 	DBVar string
+	// IsHTMLEngine is true for SSR projects using the html/template+HTMX
+	// engine — their per-model handler constructors take an extra renderer
+	// argument the templ engine's don't.
+	IsHTMLEngine bool
 }
 
 // ssrHandlerCtx is the data passed to ssrHandlerTmpl.
@@ -107,6 +114,9 @@ type ssrHandlerCtx struct {
 	// "http.HandlerFunc(h.X)" when unconfigured, or nested middleware calls
 	// wrapping it when --middleware was used for that op.
 	MW ssrHandlerMiddleware
+	// IsHTMLEngine is true for SSR projects using the html/template+HTMX
+	// engine instead of the default templ engine.
+	IsHTMLEngine bool
 }
 
 // ssrHandlerMiddleware is one ready-to-emit expression per handler method.

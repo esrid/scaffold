@@ -62,6 +62,7 @@ func TestPostgres_REST_FullCRUD(t *testing.T) {
 		module,
 		"postgres",
 		"rest",
+		"templ",
 	)
 	if errGen != nil {
 		t.Fatalf("boilerplate.Generate: %v", errGen)
@@ -209,6 +210,7 @@ func TestPostgres_SSR_Compiles(t *testing.T) {
 		module,
 		"postgres",
 		"ssr",
+		"templ",
 	)
 	if errGen != nil {
 		t.Fatalf("boilerplate.Generate: %v", errGen)

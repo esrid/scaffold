@@ -2,6 +2,14 @@
 
 all: build
 
+{{- if .IsHTML}}
+build:
+	@mkdir -p bin
+	go build -o bin/server main.go
+
+run:
+	go run main.go
+{{- else}}
 generate:
 	templ generate
 
@@ -11,6 +19,7 @@ build: generate
 
 run: generate
 	go run main.go
+{{- end}}
 
 clean:
 	rm -rf bin

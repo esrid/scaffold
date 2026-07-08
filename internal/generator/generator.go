@@ -985,6 +985,7 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 			Update: wrapHandlerExpr(mw["update"], "h.Update"),
 			Delete: wrapHandlerExpr(mw["delete"], "h.Delete"),
 		},
+		IsHTMLEngine: g.manifest.IsHTMLEngine(),
 	}
 	src, err := renderTemplate(ssrHandlerTmpl, ctx)
 	if err != nil {
@@ -1014,16 +1015,6 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 }
 
 func (g *Generator) writeSSRTemplates(model *parser.Model, res *Result) error {
-	rel := filepath.Join("web", "views", model.Snake()+".templ")
-	abs := filepath.Join(g.root, rel)
-
-	// Views are write-once: once created they belong to the user and are never
-	// clobbered on re-gen. --regen-views (g.RegenViews) forces a fresh scaffold.
-	if fileExists(abs) && !g.RegenViews {
-		res.Unchanged = append(res.Unchanged, rel)
-		return nil
-	}
-
 	fields := buildTemplateFields(model.Fields, g.manifest.DB)
 	ctx := ssrHandlerCtx{
 		ModulePath: g.modulePath,
@@ -1034,7 +1025,39 @@ func (g *Generator) writeSSRTemplates(model *parser.Model, res *Result) error {
 		Ops:        model.Ops,
 	}
 
-	content, err := renderTemplateHTML(ssrViewTmpl, ctx)
+	if g.manifest.IsHTMLEngine() {
+		// html engine: three separate write-once pages instead of one
+		// .templ file with three components.
+		views := []struct{ suffix, tmpl string }{
+			{"_list.html", ssrViewListHTMLTmpl},
+			{"_form.html", ssrViewFormHTMLTmpl},
+			{"_show.html", ssrViewShowHTMLTmpl},
+		}
+		for _, v := range views {
+			rel := filepath.Join("web", "templates", model.Snake()+v.suffix)
+			if err := g.writeWriteOnceHTML(rel, v.tmpl, ctx, res); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	rel := filepath.Join("web", "views", model.Snake()+".templ")
+	return g.writeWriteOnceHTML(rel, ssrViewTmpl, ctx, res)
+}
+
+// writeWriteOnceHTML renders tmplStr (with [[ ]] scaffold delimiters) and
+// writes it to rel, unless the file already exists and --regen-views
+// (g.RegenViews) wasn't passed — views belong to the user once created and
+// are never clobbered on re-gen.
+func (g *Generator) writeWriteOnceHTML(rel, tmplStr string, ctx ssrHandlerCtx, res *Result) error {
+	abs := filepath.Join(g.root, rel)
+	if fileExists(abs) && !g.RegenViews {
+		res.Unchanged = append(res.Unchanged, rel)
+		return nil
+	}
+
+	content, err := renderTemplateHTML(tmplStr, ctx)
 	if err != nil {
 		return fmt.Errorf("%s: %w", rel, err)
 	}
@@ -1127,12 +1150,13 @@ func (g *Generator) buildRegistryCtx() registryCtx {
 		dbVar = "pool"
 	}
 	return registryCtx{
-		ModulePath:  g.modulePath,
-		Models:      models,
-		GRPC:        g.isGRPC(),
-		IsSSR:       g.isSSR(),
-		HasHandlers: hasHandlers,
-		DBVar:       dbVar,
+		ModulePath:   g.modulePath,
+		Models:       models,
+		GRPC:         g.isGRPC(),
+		IsSSR:        g.isSSR(),
+		HasHandlers:  hasHandlers,
+		DBVar:        dbVar,
+		IsHTMLEngine: g.manifest.IsHTMLEngine(),
 	}
 }
 
@@ -1191,6 +1215,7 @@ func (g *Generator) writeAppWiring(model *parser.Model, res *Result) error {
 		NoHandler:         model.NoHandler,
 		Ops:               model.Ops,
 		MiddlewareLiteral: buildCRUDMiddlewareLiteral(model.Middleware),
+		IsHTMLEngine:      g.manifest.IsHTMLEngine(),
 	}
 	svcBlock, err := renderTemplate(serviceWireLineTmpl, modelCtx)
 	if err != nil {

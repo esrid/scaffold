@@ -15,10 +15,11 @@ import (
 )
 
 var (
-	initModule  string
-	initDB      string
-	initGRPC    bool   // legacy alias for --api grpc
-	initAPIMode string // "ssr" | "rest" | "grpc"
+	initModule    string
+	initDB        string
+	initGRPC      bool   // legacy alias for --api grpc
+	initAPIMode   string // "ssr" | "rest" | "grpc"
+	initSSREngine string // "templ" | "html" — SSR mode only
 )
 
 var initCmd = &cobra.Command{
@@ -97,8 +98,9 @@ NEXT STEPS after init
 func init() {
 	initCmd.Flags().StringVar(&initModule, "module", "", "Go module path (e.g. github.com/user/myapp)")
 	initCmd.Flags().StringVar(&initDB, "db", "", "Database driver: sqlite or postgres")
-	initCmd.Flags().StringVar(&initAPIMode, "api", "ssr", "API mode: ssr (templ+HTMX), rest (JSON API), or grpc")
+	initCmd.Flags().StringVar(&initAPIMode, "api", "ssr", "API mode: ssr, rest (JSON API), or grpc")
 	initCmd.Flags().BoolVar(&initGRPC, "grpc", false, "Enable gRPC support — alias for --api grpc (deprecated)")
+	initCmd.Flags().StringVar(&initSSREngine, "ssr-engine", "templ", "SSR view engine: templ (compiled components) or html (html/template + HTMX, no compile step) — ignored outside --api ssr")
 	_ = initCmd.MarkFlagRequired("module")
 	rootCmd.AddCommand(initCmd)
 }
@@ -139,6 +141,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --api %q: must be ssr, rest, or grpc", apiMode)
 	}
 
+	ssrEngine := strings.ToLower(strings.TrimSpace(initSSREngine))
+	if ssrEngine != "templ" && ssrEngine != "html" {
+		return fmt.Errorf("invalid --ssr-engine %q: must be templ or html", ssrEngine)
+	}
+
 	// Refuse to scaffold into a non-empty directory: walkAndWrite overwrites
 	// blindly, which would clobber an existing project. A lone .git/ (or other
 	// dotfiles, e.g. from "git init" + a .gitignore) is allowed.
@@ -158,18 +165,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Initializing %s/%s project in %s...\n", db, apiMode, dir)
 
 	// Generate boilerplate files
-	if err := boilerplate.Generate(dir, initModule, db, apiMode); err != nil {
+	if err := boilerplate.Generate(dir, initModule, db, apiMode, ssrEngine); err != nil {
 		return fmt.Errorf("init: generate: %w", err)
 	}
 
 	// Write .scaffold/models.json
-	if err := writeInitManifest(dir, initModule, db, apiMode); err != nil {
+	if err := writeInitManifest(dir, initModule, db, apiMode, ssrEngine); err != nil {
 		return fmt.Errorf("init: manifest: %w", err)
 	}
 
-	// SSR renders with templ: generate the *_templ.go files BEFORE go mod tidy so
-	// tidy sees the templ runtime imports and keeps the dependency in go.mod.
-	if apiMode == "ssr" {
+	// templ engine renders via compiled components: generate the *_templ.go
+	// files BEFORE go mod tidy so tidy sees the templ runtime imports and
+	// keeps the dependency in go.mod. The html engine has no compile step.
+	if apiMode == "ssr" && ssrEngine == "templ" {
 		if err := runTemplGenerate(dir); err != nil {
 			return fmt.Errorf("init: %w", err)
 		}
@@ -231,13 +239,14 @@ func promptDB() (string, error) {
 	return v, nil
 }
 
-func writeInitManifest(dir, module, db, apiMode string) error {
+func writeInitManifest(dir, module, db, apiMode, ssrEngine string) error {
 	m := parser.Manifest{
-		Module:  module,
-		DB:      db,
-		GRPC:    apiMode == "grpc",
-		APIMode: apiMode,
-		Models:  map[string]parser.ManifestModel{},
+		Module:    module,
+		DB:        db,
+		GRPC:      apiMode == "grpc",
+		APIMode:   apiMode,
+		SSREngine: ssrEngine,
+		Models:    map[string]parser.ManifestModel{},
 	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

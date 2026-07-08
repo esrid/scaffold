@@ -14,7 +14,11 @@ import (
 	"{{.Module}}/internal/adapters/store"
 	"{{.Module}}/internal/flash"
 	"{{.Module}}/web"
+	{{- if .IsHTML}}
+	"{{.Module}}/internal/render"
+	{{- else}}
 	"{{.Module}}/web/views"
+	{{- end}}
 	{{- if eq .DB "postgres"}}
 	"github.com/jackc/pgx/v5/pgxpool"
 	{{- else}}
@@ -40,6 +44,9 @@ type App struct {
 	logger   *slog.Logger
 	registry *Registry
 	custom   *Custom
+	{{- if .IsHTML}}
+	renderer *render.Renderer
+	{{- end}}
 	{{- if .GRPC}}
 	grpcServer *grpc.Server
 	{{- end}}
@@ -62,10 +69,22 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 	}
 	{{- end}}
 
+	{{- if .IsHTML}}
+	renderer := render.New(web.TemplatesFS, "templates/layout/base.html", web.TemplateFuncs)
+	{{- end}}
+
 	{{- if eq .DB "postgres"}}
+	{{- if .IsHTML}}
+	registry := NewRegistry(pool, renderer, logger)
+	{{- else}}
 	registry := NewRegistry(pool, logger)
+	{{- end}}
+	{{- else}}
+	{{- if .IsHTML}}
+	registry := NewRegistry(db, renderer, logger)
 	{{- else}}
 	registry := NewRegistry(db, logger)
+	{{- end}}
 	{{- end}}
 
 	return &App{
@@ -78,6 +97,9 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 		logger:   logger,
 		registry: registry,
 		custom:   newCustom(cfg, registry, logger),
+		{{- if .IsHTML}}
+		renderer: renderer,
+		{{- end}}
 	}, nil
 }
 
@@ -167,8 +189,13 @@ func (a *App) mountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", a.healthHandler)
 	mux.Handle("GET /static/", http.FileServerFS(web.StaticFS))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		{{- if .IsHTML}}
+		data := struct{ Flash *flash.Message }{Flash: flash.From(r.Context())}
+		if err := a.renderer.Render(w, http.StatusOK, "templates/home.html", data); err != nil {
+		{{- else}}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := views.Home().Render(r.Context(), w); err != nil {
+		{{- end}}
 			a.logger.Error("render home", "err", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
@@ -290,9 +317,17 @@ type Registry struct {
 
 // NewRegistry constructs and wires the entire dependency graph statically at startup.
 {{- if eq .DB "postgres"}}
+{{- if .IsHTML}}
+func NewRegistry(pool *pgxpool.Pool, renderer *render.Renderer, logger *slog.Logger) *Registry {
+{{- else}}
 func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) *Registry {
+{{- end}}
+{{- else}}
+{{- if .IsHTML}}
+func NewRegistry(db *sql.DB, renderer *render.Renderer, logger *slog.Logger) *Registry {
 {{- else}}
 func NewRegistry(db *sql.DB, logger *slog.Logger) *Registry {
+{{- end}}
 {{- end}}
 	// scaffold:stores-wire:start
 	stores := &Stores{}
