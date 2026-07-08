@@ -50,6 +50,13 @@ func TestScaffold_AllNoHandler_RegistryHasNoUnusedImports(t *testing.T) {
 			model := genModelNoHandler(t, manifest, "Job", "payload:string!")
 			runScaffold(t, root, manifest, model)
 
+			if mode == "ssr" {
+				app := readFile(t, root, "internal/app/app.go")
+				assertGoSyntax(t, app, "app.go")
+				assertNotContains(t, app, "httpAdapter.New", "app.go with only --no-handler models")
+				return
+			}
+
 			registry := readFile(t, root, "internal/app/registry.go")
 			assertGoSyntax(t, registry, "registry.go")
 			assertNotContains(t, registry, "httpadapter", "registry.go with only --no-handler models")

@@ -85,6 +85,11 @@ type registryCtx struct {
 	// It gates the httpadapter import so a project of only --no-handler models
 	// (or one left handler-less after a destroy) doesn't import it unused.
 	HasHandlers bool
+	// DBVar is the NewRegistry parameter name for the DB handle ("db" for
+	// sqlite's *sql.DB, "pool" for postgres's *pgxpool.Pool) — the merged
+	// app.go's NewRegistry signature is static, seeded once at init, so
+	// spliced wiring content must reference whichever name it already used.
+	DBVar string
 }
 
 // ssrHandlerCtx is the data passed to ssrHandlerTmpl.

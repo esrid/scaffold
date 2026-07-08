@@ -198,14 +198,22 @@ func (g *Generator) Scaffold(model *parser.Model) (*Result, error) {
 		}
 	}
 
-	// registry.go is always regenerated
-	if err := g.writeRegistry(res); err != nil {
-		return nil, err
-	}
-
-	// app.go routes section is always regenerated
-	if err := g.writeRoutes(res); err != nil {
-		return nil, err
+	if g.isSSR() {
+		// SSR mode: registry + routes are marker-spliced spans inside the
+		// merged app.go — writeAppWiring touches only this model's blocks
+		// plus the mechanical whole-block sections.
+		if err := g.writeAppWiring(model, res); err != nil {
+			return nil, err
+		}
+	} else {
+		// REST mode: registry.go and routes_gen.go are still always
+		// regenerated in full (no per-model hand-edit target there yet).
+		if err := g.writeRegistry(res); err != nil {
+			return nil, err
+		}
+		if err := g.writeRoutes(res); err != nil {
+			return nil, err
+		}
 	}
 
 	return res, nil
@@ -344,14 +352,19 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 	// Remove model from manifest before regenerating registry so it's excluded.
 	delete(g.manifest.Models, model.Name)
 
-	// Regenerate registry without this model
-	if err := g.writeRegistry(res); err != nil {
-		return nil, err
-	}
-
-	// Regenerate routes without this model
-	if err := g.writeRoutes(res); err != nil {
-		return nil, err
+	if g.isSSR() {
+		if err := g.removeAppWiring(model, res); err != nil {
+			return nil, err
+		}
+	} else {
+		// Regenerate registry without this model
+		if err := g.writeRegistry(res); err != nil {
+			return nil, err
+		}
+		// Regenerate routes without this model
+		if err := g.writeRoutes(res); err != nil {
+			return nil, err
+		}
 	}
 
 	return res, nil
@@ -1087,7 +1100,10 @@ func buildCRUDMiddlewareLiteral(mw map[string][]string) string {
 
 // ---- Registry ----
 
-func (g *Generator) writeRegistry(res *Result) error {
+// buildRegistryCtx gathers every model in the manifest into a registryCtx —
+// shared by the REST-mode whole-file registry.go (writeRegistry, unchanged)
+// and the SSR-mode merged app.go wiring (writeAppWiring).
+func (g *Generator) buildRegistryCtx() registryCtx {
 	models := make([]registryModel, 0, len(g.manifest.Models))
 	hasHandlers := false
 	for name, entry := range g.manifest.Models {
@@ -1102,29 +1118,159 @@ func (g *Generator) writeRegistry(res *Result) error {
 			MiddlewareLiteral: buildCRUDMiddlewareLiteral(entry.Middleware),
 		})
 	}
-	// Map iteration order is random — sort so registry.go is deterministic
-	// and re-running gen without changes stays byte-identical.
+	// Map iteration order is random — sort so output is deterministic and
+	// re-running gen without changes stays byte-identical.
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 
-	rel := filepath.Join("internal", "app", "registry.go")
-	var tmpl string
-	switch {
-	case g.isSSR() && g.isPostgres():
-		tmpl = registryTmplSSRPostgres
-	case g.isSSR():
-		tmpl = registryTmplSSR
-	case g.isPostgres():
-		tmpl = registryTmplPostgres
-	default:
-		tmpl = registryTmpl
+	dbVar := "db"
+	if g.isPostgres() {
+		dbVar = "pool"
 	}
-	return g.writeGoFile(rel, tmpl, registryCtx{
+	return registryCtx{
 		ModulePath:  g.modulePath,
 		Models:      models,
 		GRPC:        g.isGRPC(),
 		IsSSR:       g.isSSR(),
 		HasHandlers: hasHandlers,
-	}, true, res)
+		DBVar:       dbVar,
+	}
+}
+
+// writeRegistry regenerates the whole-file internal/app/registry.go —
+// REST mode only. SSR mode's Registry lives inside the merged app.go
+// instead (see writeAppWiring), never here.
+func (g *Generator) writeRegistry(res *Result) error {
+	ctx := g.buildRegistryCtx()
+	rel := filepath.Join("internal", "app", "registry.go")
+	var tmpl string
+	switch {
+	case g.isPostgres():
+		tmpl = registryTmplPostgres
+	default:
+		tmpl = registryTmpl
+	}
+	return g.writeGoFile(rel, tmpl, ctx, true, res)
+}
+
+// writeAppWiring splices this model's Registry wiring into the merged
+// app.go (SSR mode only — REST mode still uses writeRegistry+writeRoutes
+// as separate always-overwritten files). Whole-block sections (imports,
+// struct field lists, store wiring, route mounting) are rebuilt from the
+// full manifest every time; service-wire and handler-wire are spliced for
+// ONLY this model, leaving every other model's block — hand-edited or
+// not — untouched.
+func (g *Generator) writeAppWiring(model *parser.Model, res *Result) error {
+	rel := filepath.Join("internal", "app", "app.go")
+	path := filepath.Join(g.root, rel)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("app.go: %w", err)
+	}
+	content := string(data)
+	ctx := g.buildRegistryCtx()
+
+	whole := []struct{ name, tmpl string }{
+		{"imports", ssrImportsBlockTmpl},
+		{"type-defs", ssrTypeDefsTmpl},
+		{"stores-wire", ssrStoresWireTmpl},
+		{"routes", ssrRoutesBlockTmpl},
+	}
+	if g.isGRPC() {
+		whole = append(whole, struct{ name, tmpl string }{"grpc-wire", grpcWireTmpl}, struct{ name, tmpl string }{"grpc-routes", grpcRoutesBlockTmpl})
+	}
+	for _, w := range whole {
+		content, err = spliceWholeBlock(content, w.name, w.tmpl, ctx)
+		if err != nil {
+			return fmt.Errorf("app.go: %s: %w", w.name, err)
+		}
+	}
+
+	modelCtx := registryModel{
+		Name:              model.Name,
+		Lower:             model.Lower(),
+		NoHandler:         model.NoHandler,
+		Ops:               model.Ops,
+		MiddlewareLiteral: buildCRUDMiddlewareLiteral(model.Middleware),
+	}
+	svcBlock, err := renderTemplate(serviceWireLineTmpl, modelCtx)
+	if err != nil {
+		return fmt.Errorf("app.go: service-wire: %w", err)
+	}
+	content, err = spliceModelBlock(content, "service-wire", model.Name, svcBlock)
+	if err != nil {
+		return fmt.Errorf("app.go: service-wire: %w", err)
+	}
+
+	if model.NoHandler {
+		content = removeModelBlock(content, "handler-wire", model.Name)
+	} else {
+		hdlBlock, err := renderTemplate(ssrHandlerWireLineTmpl, modelCtx)
+		if err != nil {
+			return fmt.Errorf("app.go: handler-wire: %w", err)
+		}
+		content, err = spliceModelBlock(content, "handler-wire", model.Name, hdlBlock)
+		if err != nil {
+			return fmt.Errorf("app.go: handler-wire: %w", err)
+		}
+	}
+
+	formatted, err := formatter.GoSource(content)
+	if err != nil {
+		return fmt.Errorf("app.go: %w", err)
+	}
+	g.recordDiff(rel, formatted, res)
+	if !g.dryRun {
+		if err := os.WriteFile(path, formatted, 0644); err != nil {
+			return fmt.Errorf("app.go: %w", err)
+		}
+	}
+	res.Overwritten = append(res.Overwritten, rel)
+	return nil
+}
+
+// removeAppWiring deletes model's service-wire and handler-wire blocks from
+// app.go (SSR mode), then rebuilds the whole-block sections from the
+// (now-smaller) manifest — mirrors writeAppWiring but for Destroy.
+func (g *Generator) removeAppWiring(model *parser.Model, res *Result) error {
+	rel := filepath.Join("internal", "app", "app.go")
+	path := filepath.Join(g.root, rel)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("app.go: %w", err)
+	}
+	content := string(data)
+	content = removeModelBlock(content, "service-wire", model.Name)
+	content = removeModelBlock(content, "handler-wire", model.Name)
+
+	ctx := g.buildRegistryCtx()
+	whole := []struct{ name, tmpl string }{
+		{"imports", ssrImportsBlockTmpl},
+		{"type-defs", ssrTypeDefsTmpl},
+		{"stores-wire", ssrStoresWireTmpl},
+		{"routes", ssrRoutesBlockTmpl},
+	}
+	if g.isGRPC() {
+		whole = append(whole, struct{ name, tmpl string }{"grpc-wire", grpcWireTmpl}, struct{ name, tmpl string }{"grpc-routes", grpcRoutesBlockTmpl})
+	}
+	for _, w := range whole {
+		content, err = spliceWholeBlock(content, w.name, w.tmpl, ctx)
+		if err != nil {
+			return fmt.Errorf("app.go: %s: %w", w.name, err)
+		}
+	}
+
+	formatted, err := formatter.GoSource(content)
+	if err != nil {
+		return fmt.Errorf("app.go: %w", err)
+	}
+	g.recordDiff(rel, formatted, res)
+	if !g.dryRun {
+		if err := os.WriteFile(path, formatted, 0644); err != nil {
+			return fmt.Errorf("app.go: %w", err)
+		}
+	}
+	res.Overwritten = append(res.Overwritten, rel)
+	return nil
 }
 
 // ---- Routes ----
@@ -1335,6 +1481,55 @@ func removeMarkerBlock(content, startMark, endMark string) (string, error) {
 		endIdx++
 	}
 	return content[:startIdx] + content[endIdx:], nil
+}
+
+// spliceWholeBlock renders tmpl (whose own text carries its
+// "// scaffold:<name>:start"/"// scaffold:<name>:end" marker comments) with
+// ctx and replaces the matching span in content. Used for app.go sections
+// rebuilt from the full manifest on every `scaffold gen` — struct field
+// lists, store wiring, route mounting — where there's no realistic
+// hand-edit target, so full replacement is safe. The span must already
+// exist (seeded at init); this never inserts fresh.
+func spliceWholeBlock(content, name, tmpl string, ctx any) (string, error) {
+	block, err := renderTemplate(tmpl, ctx)
+	if err != nil {
+		return "", err
+	}
+	startMark := "// scaffold:" + name + ":start"
+	endMark := "// scaffold:" + name + ":end"
+	return replaceMarkerBlock(content, startMark, endMark, block)
+}
+
+// spliceModelBlock replaces model's existing "// scaffold:<family>:<model>:
+// start/end" span in content with block, or — the first time this model is
+// generated — inserts it right before the family's fixed
+// "// scaffold:<family>:insert" anchor comment. Indentation is sloppy on
+// insert by design; gofmt normalizes the whole file afterward.
+func spliceModelBlock(content, family, modelName, block string) (string, error) {
+	startMark := fmt.Sprintf("// scaffold:%s:%s:start", family, modelName)
+	endMark := fmt.Sprintf("// scaffold:%s:%s:end", family, modelName)
+	if updated, err := replaceMarkerBlock(content, startMark, endMark, block); err == nil {
+		return updated, nil
+	}
+	anchor := "// scaffold:" + family + ":insert"
+	idx := strings.Index(content, anchor)
+	if idx == -1 {
+		return "", fmt.Errorf("insertion anchor not found: %q", anchor)
+	}
+	return content[:idx] + block + "\n\t" + content[idx:], nil
+}
+
+// removeModelBlock deletes model's "// scaffold:<family>:<model>:start/end"
+// span, if present — a no-op (not an error) when the model never had one
+// (e.g. --no-handler models have no handler-wire block to remove).
+func removeModelBlock(content, family, modelName string) string {
+	startMark := fmt.Sprintf("// scaffold:%s:%s:start", family, modelName)
+	endMark := fmt.Sprintf("// scaffold:%s:%s:end", family, modelName)
+	updated, err := removeMarkerBlock(content, startMark, endMark)
+	if err != nil {
+		return content
+	}
+	return updated
 }
 
 func copyFile(src, dst string) error {

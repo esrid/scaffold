@@ -29,6 +29,30 @@ func projectSetup(t *testing.T, db, apiMode string) (string, *parser.Manifest) {
 		t.Fatalf("write schema.sql: %v", err)
 	}
 
+	if apiMode == "ssr" {
+		appDir := filepath.Join(root, "internal", "app")
+		if err := os.MkdirAll(appDir, 0755); err != nil {
+			t.Fatalf("mkdir app: %v", err)
+		}
+		dbVar, dbType := "db", "*sql.DB"
+		if db == "postgres" {
+			dbVar, dbType = "pool", "*pgxpool.Pool"
+		}
+		seed := "package app\n\nimport (\n\t\"net/http\"\n\n\t// scaffold:imports:start\n\t// scaffold:imports:end\n)\n\n" +
+			"// scaffold:type-defs:start\n// scaffold:type-defs:end\n\n" +
+			"type Registry struct {\n\tStores *Stores\n\tServices *Services\n\tHandlers *Handlers\n}\n\n" +
+			"func NewRegistry(" + dbVar + " " + dbType + ", logger *slog.Logger) *Registry {\n" +
+			"\t// scaffold:stores-wire:start\n\tstores := &Stores{}\n\t// scaffold:stores-wire:end\n\n" +
+			"\tsvcs := &Services{\n\t\t// scaffold:service-wire:insert\n\t}\n\n" +
+			"\thandlers := &Handlers{\n\t\t// scaffold:handler-wire:insert\n\t}\n\n" +
+			"\treturn &Registry{Stores: stores, Services: svcs, Handlers: handlers}\n}\n\n" +
+			"// scaffold:routes:start\nfunc (a *App) registerGeneratedRoutes(mux *http.ServeMux) {\n}\n// scaffold:routes:end\n\n" +
+			"func mountAt(mux *http.ServeMux, prefix string, h http.Handler) {}\n"
+		if err := os.WriteFile(filepath.Join(appDir, "app.go"), []byte(seed), 0644); err != nil {
+			t.Fatalf("write app.go: %v", err)
+		}
+	}
+
 	manifest := &parser.Manifest{
 		Module:  testModule,
 		DB:      db,
@@ -222,12 +246,13 @@ func TestScaffold_SSR_Registry_UsesPerModelHandler(t *testing.T) {
 	model := genModel(t, manifest, "Post", "title:string!", "body:string!")
 	runScaffold(t, root, manifest, model)
 
-	reg := assertExists(t, root, "internal/app/registry.go")
-	assertContains(t, reg, "*httpadapter.PostHandler", "SSR registry uses per-model handler")
-	assertNotContains(t, reg, "template.Template", "templ SSR registry must not take tmpl param")
-	assertContains(t, reg, "httpadapter.NewPostHandler(svcs.Post", "SSR registry wires handler")
-	assertNotContains(t, reg, "CRUDHandler[domain.Post]", "SSR must not use generic CRUDHandler")
-	assertGoSyntax(t, reg, "registry.go")
+	assertNotExists(t, root, "internal/app/registry.go")
+	app := assertExists(t, root, "internal/app/app.go")
+	assertContains(t, app, "*httpAdapter.PostHandler", "SSR registry uses per-model handler")
+	assertNotContains(t, app, "template.Template", "templ SSR registry must not take tmpl param")
+	assertContains(t, app, "httpAdapter.NewPostHandler(svcs.Post", "SSR registry wires handler")
+	assertNotContains(t, app, "CRUDHandler[domain.Post]", "SSR must not use generic CRUDHandler")
+	assertGoSyntax(t, app, "app.go")
 }
 
 func TestScaffold_SSR_Handler_BindForm_AllScalarTypes(t *testing.T) {
@@ -544,9 +569,9 @@ func TestScaffold_MultipleModels_SSR_EachGetsTemplates(t *testing.T) {
 	assertExists(t, root, "web/views/post.templ")
 	assertExists(t, root, "web/views/comment.templ")
 
-	reg := assertExists(t, root, "internal/app/registry.go")
-	assertContains(t, reg, "*httpadapter.PostHandler", "registry has Post")
-	assertContains(t, reg, "*httpadapter.CommentHandler", "registry has Comment")
+	app := assertExists(t, root, "internal/app/app.go")
+	assertContains(t, app, "*httpAdapter.PostHandler", "registry has Post")
+	assertContains(t, app, "*httpAdapter.CommentHandler", "registry has Comment")
 }
 
 // ---- Schema SQL ----
@@ -693,16 +718,13 @@ func TestScaffold_NoHandler_SkipsHTTP(t *testing.T) {
 	assertNotExists(t, root, "internal/adapters/http/product_handler.go")
 	assertNotExists(t, root, "web/views/product.templ")
 
-	// Verify registry.go does not reference the Handler
-	registry := assertExists(t, root, "internal/app/registry.go")
-	if strings.Contains(registry, "Handlers.Product") || strings.Contains(registry, "httpadapter.NewProductHandler") {
-		t.Error("expected registry.go to not reference Product Handler")
-	}
-
-	// Verify routes_gen.go does not mount routes for Product
-	routes := assertExists(t, root, "internal/app/routes_gen.go")
-	if strings.Contains(routes, "registry.Handlers.Product") {
-		t.Error("expected routes_gen.go to not mount Product routes")
+	// Verify app.go does not reference the Handler (SSR mode: no separate
+	// registry.go/routes_gen.go — Registry + routes live inside app.go)
+	assertNotExists(t, root, "internal/app/registry.go")
+	assertNotExists(t, root, "internal/app/routes_gen.go")
+	app := assertExists(t, root, "internal/app/app.go")
+	if strings.Contains(app, "Handlers.Product") || strings.Contains(app, "httpAdapter.NewProductHandler") {
+		t.Error("expected app.go to not reference Product Handler")
 	}
 }
 

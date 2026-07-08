@@ -26,6 +26,8 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	{{- end}}
+	// scaffold:imports:start
+	// scaffold:imports:end
 )
 
 type App struct {
@@ -241,4 +243,108 @@ func buildLogger(logLevel, env string) *slog.Logger {
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 	return logger
+}
+
+// ============================================================================
+// Registry — dependency wiring for every scaffolded model. `scaffold gen`
+// only ever touches the marked spans below; everything else in this file
+// (including the code above this line) is yours and is never regenerated.
+//
+// Struct field lists, store wiring, and route mounting are mechanical (no
+// realistic hand-edit target) and are fully rebuilt from all models on
+// every `scaffold gen`. The service-wire and handler-wire spans inside
+// NewRegistry are the ones worth hand-editing — e.g. to wrap a service in
+// a decorator — and each is scoped to ONE model: regenerating Comment
+// never touches Post's block, and your edit survives indefinitely.
+// ============================================================================
+
+// scaffold:type-defs:start
+// Stores groups all database outbound adapters.
+type Stores struct {
+}
+
+// Services groups all core business logic services.
+type Services struct {
+}
+
+// Handlers groups all SSR HTTP controllers.
+type Handlers struct {
+}
+{{- if .GRPC}}
+
+// GRPCHandlers groups all gRPC server handlers.
+type GRPCHandlers struct {
+}
+{{- end}}
+// scaffold:type-defs:end
+
+// Registry is the unified Hexagonal container of the application.
+type Registry struct {
+	Stores   *Stores
+	Services *Services
+	Handlers *Handlers
+	{{- if .GRPC}}
+	GRPCHandlers *GRPCHandlers
+	{{- end}}
+}
+
+// NewRegistry constructs and wires the entire dependency graph statically at startup.
+{{- if eq .DB "postgres"}}
+func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) *Registry {
+{{- else}}
+func NewRegistry(db *sql.DB, logger *slog.Logger) *Registry {
+{{- end}}
+	// scaffold:stores-wire:start
+	stores := &Stores{}
+	// scaffold:stores-wire:end
+
+	svcs := &Services{
+		// scaffold:service-wire:insert
+	}
+
+	handlers := &Handlers{
+		// scaffold:handler-wire:insert
+	}
+
+	{{- if .GRPC}}
+	// scaffold:grpc-wire:start
+	grpcHandlers := &GRPCHandlers{}
+	// scaffold:grpc-wire:end
+	{{- end}}
+
+	return &Registry{
+		Stores:   stores,
+		Services: svcs,
+		Handlers: handlers,
+		{{- if .GRPC}}
+		GRPCHandlers: grpcHandlers,
+		{{- end}}
+	}
+}
+
+// scaffold:routes:start
+func (a *App) registerGeneratedRoutes(mux *http.ServeMux) {
+}
+// scaffold:routes:end
+
+{{- if .GRPC}}
+
+// scaffold:grpc-routes:start
+func (a *App) registerGeneratedGRPC() {
+}
+// scaffold:grpc-routes:end
+{{- end}}
+
+// mountAt mounts h at prefix so BOTH "prefix" (no trailing slash — the
+// standard REST convention) and "prefix/..." reach it directly.
+// http.StripPrefix alone only covers the trailing-slash subtree; the bare
+// prefix would 307-redirect first. This rewrites the path in-process and
+// re-dispatches through mux instead — no HTTP redirect, no extra round trip.
+func mountAt(mux *http.ServeMux, prefix string, h http.Handler) {
+	stripped := http.StripPrefix(prefix, h)
+	mux.Handle(prefix+"/", stripped)
+	mux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path += "/"
+		mux.ServeHTTP(w, r)
+	})
 }

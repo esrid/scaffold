@@ -61,6 +61,19 @@ func Generate(dir, module, db, apiMode string) error {
 			return fmt.Errorf("boilerplate %s: %w", src, err)
 		}
 	}
+
+	if apiMode == "ssr" {
+		// {db}/internal/app/registry.go.tmpl is REST-shaped (sql.DB/pgxpool.Pool
+		// wiring for a standalone registry.go) and gets copied unconditionally
+		// by the db source above. SSR mode's Registry lives inside the merged
+		// app.go instead (see ssrTypeDefsTmpl etc in the generator package) —
+		// drop the file the db source left behind so it can't redeclare
+		// Stores/Services/Handlers/Registry/NewRegistry a second time.
+		if err := os.Remove(filepath.Join(dir, "internal", "app", "registry.go")); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing REST-shaped registry.go for SSR mode: %w", err)
+		}
+	}
+
 	return nil
 }
 
