@@ -1314,7 +1314,16 @@ func (h *{{.Name}}Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /{id}", {{.MW.Update}})
 	{{- end}}
 	{{- if .Ops.Delete}}
+	{{- if .IsHTMLEngine}}
+	// Pure SSR by default: a real DELETE verb needs JS, so this is a plain
+	// form-postable POST route instead. Want an AJAX-y delete? Add
+	// hx-post/hx-target to the button in the write-once {{.Lower}}_list.html —
+	// it'll survive every future 'scaffold gen {{.Name}}' since views are
+	// write-once.
+	mux.Handle("POST /{id}/delete", {{.MW.Delete}})
+	{{- else}}
 	mux.Handle("DELETE /{id}", {{.MW.Delete}})
+	{{- end}}
 	{{- end}}
 	// registerCustomRoutes is always called (same fixed line every
 	// regeneration) — its body lives in {{.Lower}}_handler.go, which
@@ -1432,10 +1441,12 @@ func (h *{{.Name}}Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	{{- if not .IsHTMLEngine}}
 	if r.Header.Get("HX-Request") == "true" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	{{- end}}
 	flash.Set(w, flash.Success, "{{.Name}} deleted")
 	http.Redirect(w, r, h.prefix, http.StatusSeeOther)
 }
@@ -1770,10 +1781,13 @@ templ [[.Name]]Show(item domain.[[.Name]]) {
 `
 
 // ssrViewListHTMLTmpl generates web/templates/{lower}_list.html — the html
-// engine's equivalent of [[.Name]]List in ssrViewTmpl. Same fields, same
-// hx-delete/hx-target/hx-swap/hx-confirm HTMX behavior, real html/template
-// syntax instead of templ components. [[ ]] scaffold delimiters so the
-// output file's own {{ }} html/template syntax passes through untouched.
+// engine's equivalent of [[.Name]]List in ssrViewTmpl. Pure SSR by default
+// (plain <form method=POST> delete, no htmx attributes) — htmx.min.js is
+// vendored and loaded in the layout so you can add hx-* attributes here by
+// hand when you actually want AJAX behavior; this file is write-once, so
+// the edit survives every future 'scaffold gen'. [[ ]] scaffold delimiters
+// so the output file's own {{ }} html/template syntax passes through
+// untouched.
 const ssrViewListHTMLTmpl = `{{define "title"}}[[.Name]]s{{end}}
 {{define "content"}}
 <div class="page-header">
@@ -1809,7 +1823,7 @@ const ssrViewListHTMLTmpl = `{{define "title"}}[[.Name]]s{{end}}
 					<a href="/[[.Plural]]/{{.ID}}/edit">Edit</a>
 					[[- end]]
 					[[- if .Ops.Delete]]
-					<button hx-delete="/[[.Plural]]/{{.ID}}" hx-target="#row-{{.ID}}" hx-swap="outerHTML" hx-confirm="Delete this [[.Name]]?" class="link-danger">Delete</button>
+					<form method="POST" action="/[[.Plural]]/{{.ID}}/delete" style="display:inline"><button type="submit" class="link-danger">Delete</button></form>
 					[[- end]]
 				</td>
 			</tr>
@@ -1870,7 +1884,7 @@ const ssrViewShowHTMLTmpl = `{{define "title"}}[[.Name]]{{end}}
 			<a href="/[[.Plural]]/{{.Item.ID}}/edit" class="btn btn-outline-primary">Edit</a>
 			[[- end]]
 			[[- if .Ops.Delete]]
-			<button hx-delete="/[[.Plural]]/{{.Item.ID}}" hx-push-url="/[[.Plural]]" hx-target="body" hx-confirm="Delete this [[.Name]]?" class="btn btn-outline-danger">Delete</button>
+			<form method="POST" action="/[[.Plural]]/{{.Item.ID}}/delete" style="display:inline"><button type="submit" class="btn btn-outline-danger">Delete</button></form>
 			[[- end]]
 		</div>
 	</div>
