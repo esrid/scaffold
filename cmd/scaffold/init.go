@@ -38,24 +38,36 @@ GENERATED PROJECT STRUCTURE
   ├── .scaffold/models.json        manifest — tracks all generated models
   └── internal/
       ├── app/
-      │   ├── app.go               wires everything together
+      │   ├── app.go               server startup, route mounting — SSR mode
+      │   │                        ALSO holds dependency wiring inline, inside
+      │   │                        // scaffold: marker comments (see "scaffold
+      │   │                        gen --help")
       │   ├── config.go            env-based config
-      │   └── registry.go          auto-regenerated on every gen/destroy
+      │   └── registry.go          REST/gRPC only — always regenerated in full.
+      │                            SSR mode has no registry.go: the equivalent
+      │                            wiring lives inside app.go's markers instead
       ├── core/
       │   ├── domain/errors.go     NotFoundError, ValidationError, etc.
       │   ├── ports/               repository interfaces (one file per model)
       │   └── services/            service stubs (one gen + one user file per model)
       └── adapters/
           ├── http/
-          │   ├── crud_handler.go  generic Chi CRUD handler (REST) or per-model handler (SSR)
+          │   ├── crud_handler.go  generic CRUDHandler[T] (REST) or per-model handler (SSR)
           │   └── middleware.go
           └── store/
               ├── schema.sql       full schema
               ├── migrations/      numbered SQL migration files
               └── {model}_store*.go  generated + user store files
 
+Every mode routes on stdlib net/http.ServeMux (Go 1.22+ method+pattern syntax,
+e.g. "GET /products/{id}") — no router dependency.
+
 API MODES
-  --api ssr   (default) templ + HTMX server-side rendering
+  --api ssr   (default) server-rendered HTML. --ssr-engine templ (default):
+              compiled .templ components, HTMX wired into generated views.
+              --ssr-engine html: html/template, no compile step, pure SSR —
+              htmx.min.js is vendored but views use plain forms until you add
+              hx-* attributes yourself.
   --api rest  JSON API with generic CRUDHandler[T]
   --api grpc  gRPC server (REST + gRPC hybrid)
 
@@ -63,16 +75,21 @@ MAKEFILE TARGETS (REST/gRPC mode)
   make run       build frontend + run server (go run) on :8080
   make build     build frontend + compile binary to bin/server
   make build-fe  esbuild TypeScript + CSS only
+  make proto     buf generate --path internal/adapters/grpc/pb  (gRPC only)
   make clean     remove web/dist and bin/
 
 MAKEFILE TARGETS (SSR mode)
-  make run       run server (go run) on :8080
-  make build     compile binary to bin/server
+  make run       run server (go run) on :8080 (+ templ generate first, if --ssr-engine templ)
+  make build     compile binary to bin/server (+ templ generate first, if --ssr-engine templ)
+  make generate  templ generate — only present when --ssr-engine templ
   make clean     remove bin/
 
 EXAMPLES
-  # Create ./myapp with SSR mode (default) and SQLite
+  # Create ./myapp with SSR mode (default: templ + HTMX) and SQLite
   scaffold init myapp --module github.com/yourname/myapp --db sqlite
+
+  # SSR with the html/template engine instead (no compile step)
+  scaffold init myapp --module github.com/yourname/myapp --db sqlite --ssr-engine html
 
   # Create ./myapp with REST API and Postgres
   scaffold init myapp --module github.com/yourname/myapp --db postgres --api rest

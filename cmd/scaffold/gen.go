@@ -34,7 +34,8 @@ Must be run from inside a project created by "scaffold init" (looks for .scaffol
 Running gen again on an existing model MERGES the fields you pass into the stored set:
 a name that already exists is updated in place, a new name is added, and fields you do
 not mention are kept (passing a subset never drops columns). Use --remove to drop a field.
-Each change writes a diff migration. Routes are mounted automatically in app.go.
+Each change writes a diff migration. Routes are mounted automatically (in app.go's
+markers for SSR, or routes_gen.go for REST/gRPC).
 
 FIELD SYNTAX
   field:type            nullable field (Go pointer, e.g. *string)
@@ -82,27 +83,34 @@ GENERATED FILES  (Model = "Product" → snake = "product", plural = "products")
     internal/core/services/product_service.go     your business logic — never overwritten
     internal/adapters/store/product_store_gen.go  generated SQL — always regenerated
     internal/adapters/store/product_store.go      your custom queries — never overwritten
-    internal/app/registry.go                      dependency wiring — always regenerated
-    internal/app/routes_gen.go                    route registration — always regenerated
     internal/adapters/store/migrations/           numbered SQL migration file
+
+    REST/gRPC: internal/app/registry.go and routes_gen.go — always regenerated
+               in full.
+    SSR: no registry.go/routes_gen.go — the same wiring is rewritten inline in
+         internal/app/app.go, scoped to this model's // scaffold:*:start/end
+         marker spans. Everything else in app.go is untouched.
 
   SSR mode only:
     internal/adapters/http/product_handler_gen.go SSR handler + typed bindForm — always regenerated
-    internal/adapters/http/product_handler.go     your extensions — never overwritten
-    web/views/product.templ                       templ List/Form/Show components — WRITE-ONCE
+    internal/adapters/http/product_handler.go     your extensions — never overwritten;
+                                                  registerCustomRoutes(mux) here is always
+                                                  called from the generated Router()
+    web/views/product.templ (--ssr-engine templ) or
+    web/templates/product.html (--ssr-engine html) — List/Form/Show — WRITE-ONCE
                                                   (created once, then yours; use --regen-views to refresh.
-                                                  "templ generate" is run for you)
+                                                  "templ generate" is run for you on the templ engine)
 
   gRPC mode only:
     internal/adapters/grpc/pb/product.proto       protobuf definition — always regenerated
     internal/adapters/grpc/product_handler_gen.go gRPC handler — always regenerated
     internal/adapters/grpc/shared.go              error translation — written once
 
-ROUTES (registered in internal/app/routes_gen.go)
+ROUTES (stdlib net/http.ServeMux, Go 1.22+ method+pattern syntax; no router dependency)
 
-  REST:  r.Route("/api/products", …)   → GET / GET/{id} / POST / PUT/{id} / DELETE/{id}
-  SSR:   r.Mount("/products", …)       → GET / GET/new / GET/{id} / GET/{id}/edit /
-                                          POST / POST/{id} / DELETE/{id}
+  REST:  mux.Handle("GET /api/products", …)   → GET / GET/{id} / POST / PUT/{id} / DELETE/{id}
+  SSR:   mux.Handle("GET /products", …)       → GET / GET/new / GET/{id} / GET/{id}/edit /
+                                                 POST / POST/{id} / DELETE/{id}
   gRPC:  REST routes + gRPC ProductService on :50051 (after make proto)
 
 EXAMPLES

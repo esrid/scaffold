@@ -16,7 +16,8 @@ var destroyCmd = &cobra.Command{
 
 Deletes all files for the model — generated and user-owned — and removes it from the
 registry and manifest. A DROP TABLE migration is written so the schema stays in sync.
-Routes are removed from app.go automatically.
+Routes and wiring are removed automatically (from app.go's // scaffold: markers in
+SSR mode, or registry.go/routes_gen.go in REST/gRPC mode).
 
 FILES DELETED
   Always (all modes):
@@ -31,8 +32,9 @@ FILES DELETED
   SSR mode:
     internal/adapters/http/{model}_handler_gen.go
     internal/adapters/http/{model}_handler.go    ← contains your custom handler methods
-    web/views/{model}.templ                      ← templ components
+    web/views/{model}.templ                      ← --ssr-engine templ: templ components
     web/views/{model}_templ.go                   ← templ-generated, if "make generate" was run
+    web/templates/{model}.html                   ← --ssr-engine html: html/template views
 
   gRPC mode:
     internal/adapters/grpc/pb/{model}.proto
