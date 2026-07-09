@@ -290,7 +290,7 @@ func TestScaffold_SSR_Handler_BindForm_ArrayTypes(t *testing.T) {
 
 	// Every array element type binds from the multi-valued form field.
 	assertContains(t, handler, `r.Form["tags"]`, "[]string bind reads multi-valued form")
-	assertContains(t, handler, `item.Tags = v`, "[]string assigned directly")
+	assertContains(t, handler, `strings.Split(part, ",")`, "[]string splits comma-joined input")
 	assertContains(t, handler, `r.Form["scores"]`, "[]int bind")
 	assertContains(t, handler, `strconv.Atoi(s)`, "[]int parses each element")
 	assertContains(t, handler, `strconv.ParseInt(s, 10, 64)`, "[]int64 parses each element")

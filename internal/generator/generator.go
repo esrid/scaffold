@@ -117,6 +117,13 @@ type Result struct {
 	Deleted     []string
 	BackedUp    []string
 	Diffs       []string // unified diffs, populated in --diff mode
+	// IsGRPC gates the "run make proto" reminder in Print's Next Steps —
+	// without it, GRPC mode's generated *_handler_gen.go references an
+	// internal/adapters/grpc/pb package that only exists after buf
+	// generate runs, and the default 3-step message never mentioned this,
+	// so `go build` was the very next command a user would hit a
+	// confusing "no required module provides package .../pb" error on.
+	IsGRPC bool
 }
 
 // Print writes a human-readable summary to w.
@@ -161,7 +168,12 @@ func (r *Result) Print(w io.Writer) {
 	fmt.Fprintln(w, "\nNext steps:")
 	fmt.Fprintln(w, "  1. Add validation logic in domain file → Validate()")
 	fmt.Fprintln(w, "  2. Add custom queries in store file (below generated section)")
-	fmt.Fprintln(w, "  3. Run: go build ./...")
+	if r.IsGRPC {
+		fmt.Fprintln(w, "  3. Run: make proto   (generates internal/adapters/grpc/pb from the updated .proto — needs buf)")
+		fmt.Fprintln(w, "  4. Run: go build ./...")
+	} else {
+		fmt.Fprintln(w, "  3. Run: go build ./...")
+	}
 }
 
 // recordDiff appends a unified diff of rel (old vs newContent) to res when in
@@ -186,7 +198,7 @@ func (g *Generator) recordDiff(rel string, newContent []byte, res *Result) {
 
 // Scaffold generates or updates all files for the given model.
 func (g *Generator) Scaffold(model *parser.Model) (*Result, error) {
-	res := &Result{}
+	res := &Result{IsGRPC: g.isGRPC()}
 
 	if model.IsNew {
 		if err := g.scaffoldCreate(model, res); err != nil {
@@ -242,7 +254,7 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 			model.Name, strings.Join(referencers, ", "))
 	}
 
-	res := &Result{}
+	res := &Result{IsGRPC: g.isGRPC()}
 
 	// User-owned custom/write-once files
 	customFiles := []string{
@@ -252,10 +264,19 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 		filepath.Join("internal", "adapters", "store", model.Snake()+"_store.go"),
 	}
 	if !model.NoHandler && g.isSSR() {
-		customFiles = append(customFiles,
-			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go"),
-			filepath.Join("web", "views", model.Snake()+".templ"),
-		)
+		customFiles = append(customFiles, filepath.Join("internal", "adapters", "http", model.Snake()+"_handler.go"))
+		if g.manifest.IsHTMLEngine() {
+			// html engine: three separate write-once pages instead of one
+			// .templ file (see writeSSRTemplates) — all three are
+			// user-owned once created, same as the .templ file is.
+			customFiles = append(customFiles,
+				filepath.Join("web", "templates", model.Snake()+"_list.html"),
+				filepath.Join("web", "templates", model.Snake()+"_form.html"),
+				filepath.Join("web", "templates", model.Snake()+"_show.html"),
+			)
+		} else {
+			customFiles = append(customFiles, filepath.Join("web", "views", model.Snake()+".templ"))
+		}
 	}
 
 	// Generated files (always deleted)
@@ -265,10 +286,12 @@ func (g *Generator) Destroy(model *parser.Model) (*Result, error) {
 		filepath.Join("internal", "adapters", "store", model.Snake()+"_store_gen.go"),
 	}
 	if !model.NoHandler && g.isSSR() {
-		genFiles = append(genFiles,
-			filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"),
-			filepath.Join("web", "views", model.Snake()+"_templ.go"),
-		)
+		genFiles = append(genFiles, filepath.Join("internal", "adapters", "http", model.Snake()+"_handler_gen.go"))
+		if !g.manifest.IsHTMLEngine() {
+			// templ engine only: the templ-CLI-compiled Go file. The html
+			// engine has no compile step, so no equivalent file exists.
+			genFiles = append(genFiles, filepath.Join("web", "views", model.Snake()+"_templ.go"))
+		}
 	}
 	if !model.NoHandler && g.isGRPC() {
 		genFiles = append(genFiles,
@@ -950,7 +973,7 @@ func wrapHandlerExpr(names []string, handlerRef string) string {
 
 func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result) error {
 	fields := buildTemplateFields(model.Fields, g.manifest.DB)
-	needsStrconv, needsTime, needsJSON := false, false, false
+	needsStrconv, needsTime, needsJSON, needsArraySplit := false, false, false, false
 	for _, f := range fields {
 		// bindForm parses int/int64/float values with strconv — for both scalar
 		// fields and array fields ([]int/[]int64/[]float64). string and bool
@@ -964,18 +987,22 @@ func (g *Generator) writeSSRHandler(rel string, model *parser.Model, res *Result
 		if f.IsJSON {
 			needsJSON = true
 		}
+		if f.IsArray {
+			needsArraySplit = true
+		}
 	}
 	mw := model.Middleware
 	ctx := ssrHandlerCtx{
-		ModulePath:   g.modulePath,
-		Name:         model.Name,
-		Lower:        model.Lower(),
-		Plural:       model.Plural(),
-		Fields:       fields,
-		NeedsStrconv: needsStrconv,
-		NeedsTime:    needsTime,
-		NeedsJSON:    needsJSON,
-		Ops:          model.Ops,
+		ModulePath:      g.modulePath,
+		Name:            model.Name,
+		Lower:           model.Lower(),
+		Plural:          model.Plural(),
+		Fields:          fields,
+		NeedsStrconv:    needsStrconv,
+		NeedsTime:       needsTime,
+		NeedsJSON:       needsJSON,
+		NeedsArraySplit: needsArraySplit,
+		Ops:             model.Ops,
 		MW: ssrHandlerMiddleware{
 			List:   wrapHandlerExpr(mw["list"], "h.List"),
 			New:    wrapHandlerExpr(mw["create"], "h.New"),

@@ -101,15 +101,16 @@ type registryCtx struct {
 
 // ssrHandlerCtx is the data passed to ssrHandlerTmpl.
 type ssrHandlerCtx struct {
-	ModulePath   string
-	Name         string
-	Lower        string
-	Plural       string
-	Fields       []templateField
-	NeedsStrconv bool       // true when any field requires strconv (int/float)
-	NeedsTime    bool       // true when any field is time.Time/*time.Time (bindForm parses it)
-	NeedsJSON    bool       // true when any field is json.RawMessage (bindForm validates it)
-	Ops          parser.Ops // which CRUD operations to generate
+	ModulePath      string
+	Name            string
+	Lower           string
+	Plural          string
+	Fields          []templateField
+	NeedsStrconv    bool       // true when any field requires strconv (int/float)
+	NeedsTime       bool       // true when any field is time.Time/*time.Time (bindForm parses it)
+	NeedsJSON       bool       // true when any field is json.RawMessage (bindForm validates it)
+	NeedsArraySplit bool       // true when any field is an array (bindForm splits the comma-joined input)
+	Ops             parser.Ops // which CRUD operations to generate
 	// MW holds the fully-formed handler expression for each method — plain
 	// "http.HandlerFunc(h.X)" when unconfigured, or nested middleware calls
 	// wrapping it when --middleware was used for that op.

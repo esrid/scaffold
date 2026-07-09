@@ -1256,6 +1256,9 @@ import (
 	{{- if .NeedsStrconv}}
 	"strconv"
 	{{- end}}
+	{{- if .NeedsArraySplit}}
+	"strings"
+	{{- end}}
 	{{- if .NeedsTime}}
 	"time"
 	{{- end}}
@@ -1495,36 +1498,59 @@ func (h *{{.Name}}Handler) bindForm(r *http.Request, item domain.{{.Name}}) doma
 		}
 	}
 {{- else if eq .GoType "[]string"}}
-	if v := r.Form["{{.Name}}"]; len(v) > 0 { item.{{.GoName}} = v }
+	// Accepts either one comma-joined input ("a, b, c" — what the generated
+	// form sends) or several same-name form values (a hand-built multi-select) —
+	// each raw entry is itself comma-split, so both work.
+	if raw, ok := r.Form["{{.Name}}"]; ok {
+		var out []string
+		for _, part := range raw {
+			for _, s := range strings.Split(part, ",") {
+				if s = strings.TrimSpace(s); s != "" { out = append(out, s) }
+			}
+		}
+		item.{{.GoName}} = out
+	}
 {{- else if eq .GoType "[]int"}}
-	if raw := r.Form["{{.Name}}"]; len(raw) > 0 {
-		out := make([]int, 0, len(raw))
-		for _, s := range raw {
-			if n, err := strconv.Atoi(s); err == nil { out = append(out, n) }
+	if raw, ok := r.Form["{{.Name}}"]; ok {
+		var out []int
+		for _, part := range raw {
+			for _, s := range strings.Split(part, ",") {
+				if s = strings.TrimSpace(s); s == "" { continue }
+				if n, err := strconv.Atoi(s); err == nil { out = append(out, n) }
+			}
 		}
 		item.{{.GoName}} = out
 	}
 {{- else if eq .GoType "[]int64"}}
-	if raw := r.Form["{{.Name}}"]; len(raw) > 0 {
-		out := make([]int64, 0, len(raw))
-		for _, s := range raw {
-			if n, err := strconv.ParseInt(s, 10, 64); err == nil { out = append(out, n) }
+	if raw, ok := r.Form["{{.Name}}"]; ok {
+		var out []int64
+		for _, part := range raw {
+			for _, s := range strings.Split(part, ",") {
+				if s = strings.TrimSpace(s); s == "" { continue }
+				if n, err := strconv.ParseInt(s, 10, 64); err == nil { out = append(out, n) }
+			}
 		}
 		item.{{.GoName}} = out
 	}
 {{- else if eq .GoType "[]float64"}}
-	if raw := r.Form["{{.Name}}"]; len(raw) > 0 {
-		out := make([]float64, 0, len(raw))
-		for _, s := range raw {
-			if n, err := strconv.ParseFloat(s, 64); err == nil { out = append(out, n) }
+	if raw, ok := r.Form["{{.Name}}"]; ok {
+		var out []float64
+		for _, part := range raw {
+			for _, s := range strings.Split(part, ",") {
+				if s = strings.TrimSpace(s); s == "" { continue }
+				if n, err := strconv.ParseFloat(s, 64); err == nil { out = append(out, n) }
+			}
 		}
 		item.{{.GoName}} = out
 	}
 {{- else if eq .GoType "[]bool"}}
-	if raw := r.Form["{{.Name}}"]; len(raw) > 0 {
-		out := make([]bool, 0, len(raw))
-		for _, s := range raw {
-			out = append(out, s == "on" || s == "true")
+	if raw, ok := r.Form["{{.Name}}"]; ok {
+		var out []bool
+		for _, part := range raw {
+			for _, s := range strings.Split(part, ",") {
+				if s = strings.TrimSpace(s); s == "" { continue }
+				out = append(out, s == "on" || s == "true")
+			}
 		}
 		item.{{.GoName}} = out
 	}
