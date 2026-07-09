@@ -411,7 +411,7 @@ func TestParseFields_RejectsDuplicate(t *testing.T) {
 }
 
 func TestParseFields_RejectsUnknownType(t *testing.T) {
-	_, err := ParseFields([]string{"field:uuid!"})
+	_, err := ParseFields([]string{"field:notatype!"})
 	if err == nil {
 		t.Error("expected error for unknown type")
 	}
