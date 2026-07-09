@@ -77,7 +77,7 @@ func TestPostgres_REST_FullCRUD(t *testing.T) {
 	manifest.APIMode = "rest"
 
 	fields, _ := parser.ParseFields([]string{"name:string!", "price:float!"})
-	model, _ := parser.BuildModel("Product", fields, nil, manifest, "")
+	model, _ := parser.BuildModel("Product", fields, nil, manifest, "", false)
 	manifest.Models["Product"] = model.ManifestEntry()
 	if err := parser.SaveManifest(dir, manifest); err != nil {
 		t.Fatalf("SaveManifest: %v", err)
@@ -222,13 +222,25 @@ func TestPostgres_SSR_Compiles(t *testing.T) {
 	manifest.APIMode = "ssr"
 
 	fields, _ := parser.ParseFields([]string{"title:string!", "content:string!", "published:bool!"})
-	model, _ := parser.BuildModel("Article", fields, nil, manifest, "")
+	model, _ := parser.BuildModel("Article", fields, nil, manifest, "", false)
 	manifest.Models["Article"] = model.ManifestEntry()
 	parser.SaveManifest(dir, manifest)
 
 	g := generator.New(dir, module, manifest, false)
 	if _, err := g.Scaffold(model); err != nil {
 		t.Fatalf("Scaffold: %v", err)
+	}
+
+	// templ mode renders via compiled components (views.ArticleList etc, in
+	// the generated *_templ.go) — this test drives the generator directly,
+	// bypassing the CLI layer that normally runs this for you (see
+	// runTemplGenerate in cmd/scaffold/init.go and gen.go), so it must be
+	// run explicitly here too, in the same order (before go mod tidy, so
+	// tidy sees the templ runtime import).
+	templGen := exec.Command("templ", "generate")
+	templGen.Dir = dir
+	if out, err := templGen.CombinedOutput(); err != nil {
+		t.Fatalf("templ generate:\n%s\n%v", out, err)
 	}
 
 	tidy := exec.Command("go", "mod", "tidy")
