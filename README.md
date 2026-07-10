@@ -90,7 +90,9 @@ scaffold gen <Model> [field:type{modifier}!...] [flags]
 Running `gen` again on an existing model **merges** the fields you pass into the stored set: a field name that already exists is updated in place, a new name is **added**, and fields you don't mention are **kept**. Passing a subset never drops columns. To drop a field, name it with `--remove`. Adding/removing fields writes a diff migration; your hand-written files are never overwritten.
 
 > [!WARNING]
-> Changing the **type or modifiers** of an existing field updates the generated code and `schema.sql` but writes **no migration** (column type changes are DB-specific and lossy). scaffold prints a warning listing the changed fields — write the `ALTER TABLE` yourself in `internal/adapters/store/migrations/`.
+> Changing the **type or modifiers** of an existing field updates the generated code and `schema.sql` but writes **no migration** (column type changes are DB-specific and lossy — the same reason Rails/Ecto never auto-generate them either). Instead of a warning that scrolls by unnoticed, `scaffold gen` **fails the command** (exit 1) listing the changed fields, so CI/pre-commit catches a code/database mismatch before it ships. Write the `ALTER TABLE` yourself in `internal/adapters/store/migrations/`, then re-run with `--force` to acknowledge and let the command succeed.
+
+Every generated migration file also opens with an `-- Action: …` comment stating what happened (created table, added/dropped column(s), soft delete toggled, unique-together constraint added/dropped) — so the file is self-describing without needing to diff it against the manifest.
 
 | Flag | Description |
 |------|-------------|
@@ -106,6 +108,7 @@ Running `gen` again on an existing model **merges** the fields you pass into the
 | `--middleware op:Func1,Func2` | Wrap an op's route (`op` ∈ `list,read,create,update,delete,all`) with named middleware functions. Repeatable. Sticky across regeneration — stored in the manifest and merged, not replaced, on the next `gen` |
 | `--remove-middleware <op>` | Clear middleware from named op(s), or `all` |
 | `--regen-views` | Overwrite SSR views (default: write-once — `.templ`/`.html` views are never clobbered once created) |
+| `--force` | Acknowledge an in-place field change (type/nullability) with no matching migration, and let the command exit 0 anyway — you're still on the hook for writing the `ALTER TABLE` yourself |
 
 #### Field syntax
 

@@ -23,6 +23,7 @@ var (
 	uniqueTogether   []string
 	middlewareSpecs  []string
 	removeMiddleware []string
+	forceChanged     bool
 )
 
 var genCmd = &cobra.Command{
@@ -34,8 +35,13 @@ Must be run from inside a project created by "scaffold init" (looks for .scaffol
 Running gen again on an existing model MERGES the fields you pass into the stored set:
 a name that already exists is updated in place, a new name is added, and fields you do
 not mention are kept (passing a subset never drops columns). Use --remove to drop a field.
-Each change writes a diff migration. Routes are mounted automatically (in app.go's
-markers for SSR, or routes_gen.go for REST/gRPC).
+Each change writes a diff migration, prefixed with an "-- Action: ..." comment stating
+what happened. Routes are mounted automatically (in app.go's markers for SSR, or
+routes_gen.go for REST/gRPC).
+
+Changing the TYPE or NULLABILITY of an existing field is the one case with no
+generated migration (column changes are DB-specific and lossy) — the command fails
+(exit 1) until you write the ALTER TABLE by hand and re-run with --force.
 
 FIELD SYNTAX
   field:type            nullable field (Go pointer, e.g. *string)
@@ -178,6 +184,7 @@ func init() {
 	genCmd.Flags().StringArrayVar(&uniqueTogether, "unique-together", nil, "Define compound unique constraint(s) (comma-separated fields, e.g. 'name,category')")
 	genCmd.Flags().StringArrayVar(&middlewareSpecs, "middleware", nil, "Wrap an op's route with middleware: op:Func1,Func2 (op: list,read,create,update,delete,all). Repeatable. Sticky across regeneration.")
 	genCmd.Flags().StringSliceVar(&removeMiddleware, "remove-middleware", nil, "Op name(s) to clear middleware from (comma-separated or repeated; 'all' clears everything)")
+	genCmd.Flags().BoolVar(&forceChanged, "force", false, "Acknowledge in-place field changes (type/nullability) with no matching migration, and exit 0 anyway — you must write the ALTER TABLE yourself")
 	rootCmd.AddCommand(genCmd)
 }
 
@@ -294,15 +301,29 @@ func runGen(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	result.Print(os.Stdout)
 
 	// A changed field definition (type, nullability, modifiers) is updated in
 	// the generated code and schema.sql, but scaffold cannot safely emit the
-	// matching ALTER (column type changes are DB-specific and lossy) — make
-	// the gap loud instead of letting code and database drift silently.
-	if len(model.ChangedFields) > 0 {
+	// matching ALTER (column type changes are DB-specific and lossy, exactly
+	// why Rails/Ecto don't auto-generate them either) — so instead of a
+	// warning that scrolls by unnoticed, this fails the command (like Rails'
+	// PendingMigrationError) so CI/pre-commit catches a prod/code mismatch
+	// before it ships. --force acknowledges you've written the migration
+	// yourself (or will, before deploying) and lets the command exit 0.
+	// dry-run/--diff write nothing, so there's nothing to drift yet — warn
+	// but don't fail, or previewing a type change in CI would itself fail.
+	if len(model.ChangedFields) > 0 && !forceChanged && !dryRun {
 		fmt.Printf("⚠ Field definition changed in place: %s\n", strings.Join(model.ChangedFields, ", "))
 		fmt.Println("  Generated code and schema.sql were updated, but NO migration was written.")
-		fmt.Println("  Write a manual migration in internal/adapters/store/migrations/ to alter the column(s).")
+		fmt.Println("  Write a manual migration in internal/adapters/store/migrations/ to alter the column(s),")
+		fmt.Println("  then re-run with --force to acknowledge and let this command succeed.")
+		return fmt.Errorf("field definition changed with no migration: %s", strings.Join(model.ChangedFields, ", "))
+	}
+	if len(model.ChangedFields) > 0 && dryRun {
+		fmt.Printf("⚠ Field definition changed in place (preview only, no migration would be written): %s\n", strings.Join(model.ChangedFields, ", "))
+	} else if len(model.ChangedFields) > 0 && forceChanged {
+		fmt.Printf("⚠ Field definition changed in place (acknowledged via --force): %s\n", strings.Join(model.ChangedFields, ", "))
 	}
 
 	if !dryRun {
@@ -318,7 +339,6 @@ func runGen(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	result.Print(os.Stdout)
 	return nil
 }
 

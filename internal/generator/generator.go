@@ -786,6 +786,31 @@ func (g *Generator) removeSchemaBlock(model *parser.Model, res *Result) error {
 
 // ---- Migrations ----
 
+// describeField renders a field as a short human-readable spec for migration
+// action comments, e.g. "stock (int, nullable)" or "sku (string, unique, NOT NULL)".
+func describeField(f parser.Field) string {
+	parts := []string{strings.TrimPrefix(f.GoType, "*")}
+	if f.NotNull {
+		parts = append(parts, "NOT NULL")
+	} else {
+		parts = append(parts, "nullable")
+	}
+	for _, m := range f.Modifiers {
+		if m == "unique" || m == "index" {
+			parts = append(parts, m)
+		}
+	}
+	return fmt.Sprintf("%s (%s)", f.Name, strings.Join(parts, ", "))
+}
+
+func describeFields(fs []parser.Field) string {
+	names := make([]string, len(fs))
+	for i, f := range fs {
+		names[i] = describeField(f)
+	}
+	return strings.Join(names, ", ")
+}
+
 func (g *Generator) writeCreateMigration(model *parser.Model, res *Result) error {
 	name := fmt.Sprintf("%05d_create_%s.sql", model.MigrationVersion, model.TableName)
 	rel := filepath.Join("internal", "adapters", "store", "migrations", name)
@@ -793,7 +818,11 @@ func (g *Generator) writeCreateMigration(model *parser.Model, res *Result) error
 	if g.isPostgres() {
 		tmpl = migrationCreateTmplPostgres
 	}
-	return g.writeSQLFile(rel, tmpl, buildMigrationCtx(model, nil, nil, g.manifest.DB), res)
+	comment := fmt.Sprintf("-- Action: created table %s\n", model.TableName)
+	if len(model.Fields) > 0 {
+		comment = fmt.Sprintf("-- Action: created table %s: %s\n", model.TableName, describeFields(model.Fields))
+	}
+	return g.writeSQLFile(rel, comment+tmpl, buildMigrationCtx(model, nil, nil, g.manifest.DB), res)
 }
 
 func (g *Generator) writeAlterMigration(model *parser.Model, added, removed []parser.Field, res *Result) error {
@@ -838,7 +867,30 @@ func (g *Generator) writeAlterMigration(model *parser.Model, added, removed []pa
 		tmplStr += migrationDropUniqueTogetherTmpl
 	}
 
-	return g.writeSQLFile(rel, tmplStr, ctx, res)
+	var comment strings.Builder
+	if len(added) > 0 {
+		fmt.Fprintf(&comment, "-- Action: added column(s) to %s: %s\n", model.TableName, describeFields(added))
+	}
+	if len(removed) > 0 {
+		names := make([]string, len(removed))
+		for i, f := range removed {
+			names[i] = f.Name
+		}
+		fmt.Fprintf(&comment, "-- Action: dropped column(s) from %s: %s\n", model.TableName, strings.Join(names, ", "))
+	}
+	if model.SoftDelete && !model.PrevSoftDelete {
+		fmt.Fprintf(&comment, "-- Action: enabled soft delete on %s (added deleted_at column)\n", model.TableName)
+	} else if !model.SoftDelete && model.PrevSoftDelete {
+		fmt.Fprintf(&comment, "-- Action: disabled soft delete on %s (dropped deleted_at column)\n", model.TableName)
+	}
+	for _, cols := range addedUT {
+		fmt.Fprintf(&comment, "-- Action: added unique-together constraint on %s: (%s)\n", model.TableName, strings.Join(cols, ", "))
+	}
+	for _, cols := range removedUT {
+		fmt.Fprintf(&comment, "-- Action: dropped unique-together constraint on %s: (%s)\n", model.TableName, strings.Join(cols, ", "))
+	}
+
+	return g.writeSQLFile(rel, comment.String()+tmplStr, ctx, res)
 }
 
 func (g *Generator) writeDropMigration(model *parser.Model, res *Result) error {
@@ -848,7 +900,8 @@ func (g *Generator) writeDropMigration(model *parser.Model, res *Result) error {
 	if g.isPostgres() {
 		tmpl = migrationDropTableTmplPostgres
 	}
-	return g.writeSQLFile(rel, tmpl, buildMigrationCtx(model, nil, nil, g.manifest.DB), res)
+	comment := fmt.Sprintf("-- Action: dropped table %s\n", model.TableName)
+	return g.writeSQLFile(rel, comment+tmpl, buildMigrationCtx(model, nil, nil, g.manifest.DB), res)
 }
 
 // ---- gRPC ----
